@@ -1,8 +1,8 @@
-import { Mail, Phone, ExternalLink, ArrowDown } from "lucide-react";
+import { Mail, Phone, ExternalLink } from "lucide-react";
 
 export default function Hero() {
   return (
-    <section className="min-h-[85vh] flex flex-col justify-center px-6 md:px-12 lg:px-24 max-w-5xl mx-auto w-full">
+    <section className="px-6 md:px-12 lg:px-24 max-w-5xl mx-auto w-full pt-20 md:pt-32 pb-16">
       <p className="text-accent font-mono text-sm mb-4 tracking-wide">
         Senior QA Engineer
       </p>
@@ -15,7 +15,7 @@ export default function Hero() {
         device quality at scale.
       </p>
 
-      <div className="flex flex-wrap gap-4 text-sm text-muted mb-12">
+      <div className="flex flex-wrap gap-4 text-sm text-muted">
         <a
           href="mailto:me@abishekg.com"
           className="flex items-center gap-2 hover:text-foreground transition-colors"
@@ -40,14 +40,6 @@ export default function Hero() {
           LinkedIn
         </a>
       </div>
-
-      <a
-        href="#projects"
-        className="text-muted hover:text-foreground transition-colors flex items-center gap-2 text-sm"
-      >
-        <ArrowDown size={16} />
-        See my work
-      </a>
     </section>
   );
 }

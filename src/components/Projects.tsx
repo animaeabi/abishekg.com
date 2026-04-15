@@ -42,29 +42,29 @@ export default function Projects() {
   return (
     <section
       id="projects"
-      className="px-6 md:px-12 lg:px-24 max-w-5xl mx-auto w-full py-20"
+      className="px-6 md:px-12 lg:px-24 max-w-5xl mx-auto w-full py-16 border-t border-card-border"
     >
-      <h2 className="text-sm font-mono text-accent tracking-wide mb-10 uppercase">
+      <h2 className="text-sm font-mono text-accent tracking-wide mb-8 uppercase">
         Featured Projects
       </h2>
-      <div className="space-y-8">
+      <div className="space-y-6">
         {projects.map((project) => (
           <div
             key={project.title}
-            className="border border-card-border rounded-lg p-6 md:p-8 bg-card"
+            className="border border-card-border rounded-lg p-6 bg-card hover:border-accent/30 transition-colors"
           >
-            <div className="mb-1">
-              <span className="text-xs text-muted font-mono">
+            <div className="flex flex-col md:flex-row md:items-start md:justify-between gap-1 mb-3">
+              <h3 className="text-base md:text-lg font-semibold">
+                {project.title}
+              </h3>
+              <span className="text-xs text-muted font-mono shrink-0">
                 {project.role}
               </span>
             </div>
-            <h3 className="text-lg md:text-xl font-semibold mb-3">
-              {project.title}
-            </h3>
-            <p className="text-muted text-sm leading-relaxed mb-5">
+            <p className="text-muted text-sm leading-relaxed mb-4">
               {project.description}
             </p>
-            <div className="flex flex-wrap gap-2 mb-5">
+            <div className="flex flex-wrap gap-2 mb-4">
               {project.metrics.map((metric) => (
                 <span
                   key={metric}
