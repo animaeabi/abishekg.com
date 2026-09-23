@@ -31,7 +31,7 @@ export default function Hero() {
           415.481.9889
         </a>
         <a
-          href="https://linkedin.com/in/abishekg"
+          href="https://www.linkedin.com/in/abishekgopal/"
           target="_blank"
           rel="noopener noreferrer"
           className="flex items-center gap-2 hover:text-foreground transition-colors"
