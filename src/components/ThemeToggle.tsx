@@ -1,29 +1,25 @@
 "use client";
 
-import { useEffect, useState } from "react";
+import { useSyncExternalStore } from "react";
 import { Sun, Moon } from "lucide-react";
 
-export default function ThemeToggle() {
-  const [dark, setDark] = useState(true);
-  const [mounted, setMounted] = useState(false);
+function subscribeToTheme(onChange: () => void) {
+  const observer = new MutationObserver(onChange);
+  observer.observe(document.documentElement, { attributes: true, attributeFilter: ["class"] });
+  return () => observer.disconnect();
+}
 
-  useEffect(() => {
-    const saved = localStorage.getItem("theme");
-    const prefersDark =
-      saved === "dark" || (!saved && window.matchMedia("(prefers-color-scheme: dark)").matches);
-    setDark(prefersDark);
-    document.documentElement.classList.toggle("dark", prefersDark);
-    setMounted(true);
-  }, []);
+const currentTheme = () => document.documentElement.classList.contains("dark");
+const serverTheme = () => false;
+
+export default function ThemeToggle() {
+  const dark = useSyncExternalStore(subscribeToTheme, currentTheme, serverTheme);
 
   const toggle = () => {
     const next = !dark;
-    setDark(next);
     document.documentElement.classList.toggle("dark", next);
-    localStorage.setItem("theme", next ? "dark" : "light");
+    try { localStorage.setItem("theme", next ? "dark" : "light"); } catch { /* Theme still works when storage is unavailable. */ }
   };
-
-  if (!mounted) return <div className="w-9 h-9" />;
 
   return (
     <button

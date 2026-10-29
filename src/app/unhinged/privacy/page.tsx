@@ -13,7 +13,7 @@ export default function PrivacyPage() {
     <>
       <h1>Privacy Policy</h1>
       <p><strong>Unhinged · Effective October 28, 2026</strong></p>
-      <p>Unhinged is an on-device entertainment app developed by Abishek Gopal. For privacy questions, email <a href="mailto:me@abishekg.com">me@abishekg.com</a>. This policy covers the current Unhinged app and these support and privacy pages.</p>
+      <p>Unhinged is an entertainment display-glitch prank developed by Abishek Gopal. Its screenshot effects run on your device. For privacy questions, email <a href="mailto:me@abishekg.com">me@abishekg.com</a>. This policy covers the current Unhinged app and these support and privacy pages.</p>
       <h2>Selected screenshots stay on your device</h2>
       <p>The system photo picker gives Unhinged only the images you choose. The app does not request your entire photo library, take screenshots of other apps, read your installed-app list, or change your original Photos assets.</p>
       <p>Unhinged creates app-owned, normalized image copies to prepare and render scenes locally. Screenshots may contain personal information, so choose what you are comfortable displaying. The app does not upload your images, crops or scene contents to the developer or an AI service.</p>
@@ -22,7 +22,7 @@ export default function PrivacyPage() {
       <p>During damaged playback, repeated taps on likely icon positions may reveal a simulation reminder. Touch and gesture state is used locally for playback and temporary reactions; it is not sent as analytics or retained as a touch history.</p>
       <h2>Other local information</h2>
       <p>The app stores scene names and ordering, image references and crops, preferences, completed fold or shake progress, effect settings and the notice-acceptance preference. A name saved by an earlier version may also remain locally until reset.</p>
-      <p>On Duo, public hinge information drives folding effects and optional opening audio. On other iPhones, completed system shake events drive the effect. The app does not record raw motion histories, microphone input or camera video. The Duo idle-display timeout is a local visual effect and does not record your activity.</p>
+      <p>On a foldable iPhone, public hinge information drives folding effects and optional opening audio. On other iPhones, completed system shake events drive the effect. The app does not record raw motion histories, microphone input or camera video. The foldable idle-display timeout is a local visual effect and does not record your activity.</p>
       <h2>No app tracking, advertising or account</h2>
       <p>The current app has no advertising, app analytics, account service, tracking identifiers or third-party analytics SDKs. It does not send screenshots or locally stored scene/effect data off the device. Apple may separately process App Store transactions, diagnostics or device backups under your Apple settings and Apple&apos;s policies; those services are not operated by Unhinged.</p>
       <h2>Retention and deletion</h2>
