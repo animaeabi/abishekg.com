@@ -109,3 +109,22 @@ All 59 automated checks pass, including synthetic noise attenuation, deliberate
 movement response, single-knuckle depth noise, false-throw rejection, and real
 application integration. The production build passes. Physical-phone camera
 jitter, occlusion and motion-blur behavior still require device validation.
+
+
+## Wala garland effects revision — November 8, 2026
+
+100/1,000/10,000 now use varied S curves, paired-sided paper bodies and dense
+layered packets rather than a uniform flat grid. A seeded timeline gives short
+runs, hesitations, varied accents and a faster final section. Local vertex-shader
+recoil preserves anchored instance matrices. Smaller warm flashes, ballistic
+paper, accumulating smoke and a fading charred cord replace the uniform wipe.
+Audio mixes irregular snap offsets into short bounded buffers and disposes every
+per-window node. No borrowed recordings or product imagery ship with the site.
+
+67 automated checks pass, covering exact counts, seeded variation, frame-rate
+independent completion, nonuniform intervals, audio clipping/bounds and cleanup,
+shader transform order, mixed-effect limits, and all existing palm/drop behavior.
+The geometry was inspected through a CPU top-view projection. The browser preview
+failed because its launcher passes unsupported Vite flags to Next; no working
+application command was modified to compensate. Real GPU rendering, audio feel
+and physical Safari/Chrome AR performance still need a device pass.

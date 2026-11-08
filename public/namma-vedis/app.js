@@ -7,6 +7,7 @@ import { waitForWorldEngine, createWorldTracking } from './world-tracking.mjs';
 import { AtomSequence, playAtomAftertone } from './atom-aftertone.mjs';
 import { createCrackerModel, addCrackerLights } from './cracker-models.mjs';
 import { WALA_CONFIGS, createWalaLayout } from './wala-layout.mjs';
+import { createWalaBurn, walaIndexAt, renderWalaAudio, decorateWalaMaterial } from './wala-burn.mjs';
 import { HandAnchor, palmPose, handEffectScale } from './hand-anchor.mjs';
 import { HandObjectMotion, PALM_FUSES } from './hand-motion.mjs';
 import { HandStabilizer } from './hand-stabilizer.mjs';
@@ -773,7 +774,10 @@ const TEX = {
   }),
   wala: paperTex((x) => {
     x.fillStyle = '#b81f1c'; x.fillRect(0, 0, 128, 128);
-    x.fillStyle = '#f0d27a'; x.fillRect(0, 54, 128, 18);
+    x.fillStyle = '#d7b975'; x.fillRect(0, 57, 128, 10);
+    x.fillStyle = '#8c1816'; x.fillRect(0, 0, 3, 128);
+    x.strokeStyle = 'rgba(255,226,176,.12)'; x.lineWidth = 1;
+    for (let y = 8; y < 128; y += 13) { x.beginPath(); x.moveTo(0, y); x.lineTo(128, y + 3); x.stroke(); }
   }),
   shadow: paperTex((x) => {
     const g = x.createRadialGradient(64, 64, 4, 64, 64, 62);
@@ -978,64 +982,115 @@ function sanguchakram(p) {
   addEmitter(wheel);
 }
 
-// The S-shaped garland and its burn front stay fixed in the world.
+// The loose garland stays anchored. Only a small section near the burn front
+// recoils, in the vertex shader, without rewriting all 10,000 instance matrices.
 const WALAS = WALA_CONFIGS;
 function wala(p, w) {
   const groundY = p.y, n = w.n, large = n === 10000;
-  const { points: pts, directions, cordPoints } = createWalaLayout(p, effectSpace === palmWorld ? new THREE.Quaternion() : camera.quaternion, w);
-  const mat = new THREE.MeshStandardMaterial({ map: TEX.wala, roughness: .86, toneMapped: false });
-  const cap = new THREE.MeshStandardMaterial({ color: 0xcba876, roughness: .96, toneMapped: false });
-  const inst = new THREE.InstancedMesh(G.wala, [mat, cap, cap], n), dummy = new THREE.Object3D();
+  const layout = createWalaLayout(p, effectSpace === palmWorld ? new THREE.Quaternion() : camera.quaternion, w);
+  const { points: pts, directions, cordPoints, scales, shades, kicks } = layout;
+  const burn = createWalaBurn(w, layout.seed), clock = { value: 0 };
+  const mat = new THREE.MeshStandardMaterial({ map: TEX.wala, roughness: .91, toneMapped: false });
+  const cap = new THREE.MeshStandardMaterial({ color: 0xcba876, roughness: .97, toneMapped: false });
+  decorateWalaMaterial(mat, clock); decorateWalaMaterial(cap, clock);
+  const geometry = G.wala.clone(), fireAt = new Float32Array(n), kick = new Float32Array(n * 3);
+  const inst = new THREE.InstancedMesh(geometry, [mat, cap, cap], n), dummy = new THREE.Object3D(), tint = new THREE.Color();
   inst.name = `wala-${n}`;
   const up = new THREE.Vector3(0, 1, 0);
   for (let i = 0; i < n; i++) {
-    dummy.position.copy(pts[i]);
-    dummy.quaternion.setFromUnitVectors(up, directions[i]);
-    dummy.scale.setScalar(w.scale);
-    dummy.updateMatrix();
-    // Reverse order lets the burn front reduce the draw count without uploading
-    // a 10,000-instance matrix buffer again on every frame.
-    inst.setMatrixAt(n - 1 - i, dummy.matrix);
+    dummy.position.copy(pts[i]); dummy.quaternion.setFromUnitVectors(up, directions[i]);
+    dummy.scale.setScalar(scales[i]); dummy.updateMatrix();
+    const reversed = n - 1 - i;
+    inst.setMatrixAt(reversed, dummy.matrix);
+    inst.setColorAt(reversed, tint.setRGB(shades[i], shades[i] * (.9 + .1 * burn.tone[i]), shades[i] * .86));
+    fireAt[reversed] = burn.times[i]; kicks[i].toArray(kick, reversed * 3);
   }
-  inst.instanceMatrix.needsUpdate = true;
-  inst.frustumCulled = false;
-  effectSpace.add(inst);
-  const cordGeo = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(cordPoints), cordPoints.length * 2, .0015 * w.scale, 5, false);
-  const cordMat = new THREE.MeshStandardMaterial({ color: 0xb39565, roughness: .97, toneMapped: false });
+  geometry.setAttribute('iWalaAt', new THREE.InstancedBufferAttribute(fireAt, 1));
+  geometry.setAttribute('iWalaKick', new THREE.InstancedBufferAttribute(kick, 3));
+  inst.instanceMatrix.needsUpdate = true; inst.instanceColor.needsUpdate = true;
+  inst.frustumCulled = false; effectSpace.add(inst);
+  const cordGeo = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(cordPoints), cordPoints.length * 2, .002 * w.scale, 5, false);
+  const cordMat = new THREE.MeshStandardMaterial({ color: 0x9e917b, roughness: .98, toneMapped: false });
   const cord = new THREE.Mesh(cordGeo, cordMat); cord.name = `wala-fuse-${n}`; effectSpace.add(cord);
+  const ashGeo = cordGeo.clone(), ashMat = new THREE.MeshStandardMaterial({ color: 0x312920, roughness: 1, transparent: true, opacity: .72, depthWrite: false, toneMapped: false });
+  const ash = new THREE.Mesh(ashGeo, ashMat); ash.name = `wala-ash-${n}`; effectSpace.add(ash); ashGeo.setDrawRange(0, 0);
   const cordCount = cordGeo.index.count;
-  let t = 0, i = 0, cursor = .45, lastSound = -1, lastSmoke = -1;
-  const times = pts.map(() => {
-    const at = cursor; cursor += rand(w.gap[0], w.gap[1]); return at;
-  });
-  addEmitter({ ground: true, largeWala: large, update(dt) {
-    t += dt;
+  let t = 0, i = 0, audioAt = 0, smokeAt = 0, lastHaptic = 0, paperTokens = 0, finished = false;
+  const soundChunk = (from, to) => {
+    if (!actx || muted || !actx.sampleRate) return;
+    const chunk = renderWalaAudio(actx.sampleRate, burn, from, to);
+    if (chunk.end === chunk.first) return;
+    const buffer = actx.createBuffer(1, chunk.samples.length, actx.sampleRate);
+    buffer.getChannelData(0).set(chunk.samples);
+    const source = actx.createBufferSource(), gain = actx.createGain(); source.buffer = buffer;
+    gain.gain.value = .9; source.connect(gain);
+    const disconnect = route(gain, panFor(pts[Math.min(n - 1, chunk.first)]), .18);
+    source.onended = () => { source.disconnect(); disconnect(); };
+    source.start(actx.currentTime + Math.max(0, from - t) + .015);
+  };
+  const retireBodies = () => {
+    if (finished) return;
+    finished = true; inst.removeFromParent(); inst.dispose(); geometry.dispose(); mat.dispose(); cap.dispose();
+    cord.removeFromParent(); cordGeo.dispose(); cordMat.dispose();
+  };
+  sfx.fuse(burn.fuse, panFor(pts[0]));
+  const emitter = { ground: true, largeWala: large, wala: true, phase: 'fuse', burnt: 0, update(dt) {
+    t += dt; clock.value = t;
+    paperTokens = Math.min(10, paperTokens + dt * (large ? 65 : n === 1000 ? 42 : 30));
+    if (!finished && audioAt < t + .09) {
+      // Schedule real within-window snap offsets, not one sound per display frame.
+      const from = Math.max(audioAt, t - .015), to = from + .12;
+      soundChunk(from, to); audioAt = to;
+    }
+    if (t < burn.fuse) {
+      const q = pts[0];
+      spawn(q.x, q.y + .008, q.z, rand(-.15, .15), rand(.2, .7), rand(-.15, .15), .12, .004, C.amber, C.charcoal, 2, 4, F.TWINKLE, 0, .02, 0, groundY);
+      return true;
+    }
     const start = i;
-    while (i < n && times[i] <= t) i++;
+    i = walaIndexAt(burn.times, t); emitter.burnt = i;
     if (i > start) {
-      inst.count = n - i;
+      emitter.phase = 'crackling'; inst.count = n - i;
       const burnt = Math.floor(cordCount * i / n / 30) * 30;
-      cordGeo.setDrawRange(burnt, cordCount - burnt);
-      // Represent simultaneous pops with bounded particles/audio, independent
-      // of how many crackers elapsed in a slow frame. Every body still burns.
+      cordGeo.setDrawRange(burnt, cordCount - burnt); ashGeo.setDrawRange(0, burnt);
       const samples = Math.min(6, i - start);
       for (let j = 0; j < samples; j++) {
-        const at = start + Math.floor((i - start - 1) * (samples === 1 ? 1 : j / (samples - 1))), q = pts[at];
-        for (let k = 0; k < (large ? 5 : 12); k++) { const d = randDir(), v = rand(1.5, 4.6); spawn(q.x, groundY + .04, q.z, d[0] * v, Math.abs(d[1]) * v, d[2] * v, rand(.1, .3), .012, C.white, C.amber, 2.2, 7, F.BOUNCE, 0, .03, 0, groundY); }
-        if (!large || j === samples - 1) scatterPaper(q.x, groundY + .03, q.z, w.paper, 1.4, 11, groundY);
+        const at = start + Math.floor((i - start - 1) * (samples === 1 ? 1 : j / (samples - 1)));
+        const q = pts[at].clone().add(kicks[at]), energy = burn.energy[at];
+        const count = Math.round((5 + energy * 9) * quality);
+        for (let k = 0; k < count; k++) {
+          const d = randDir(), speed = rand(.5, 3.5) * (.55 + energy * .4);
+          spawn(q.x, q.y, q.z, d[0] * speed, Math.abs(d[1]) * speed, d[2] * speed,
+            rand(.09, .36), rand(.004, .009), k % 4 ? C.gold : C.white, C.charcoal, 1.5, 9.8,
+            F.BOUNCE | (k === 0 ? F.TRAIL : 0), .09, .018, 0, groundY);
+        }
+        const paper = Math.min(Math.floor(paperTokens), Math.ceil(w.paper * energy)); paperTokens -= paper;
+        for (let k = 0; k < paper; k++) {
+          const c = k % 4 ? PAPER : PAPER2, d = directions[at], side = rand(-1.6, 1.6);
+          puff(q.x, q.y, q.z, d.x * side + rand(-.4, .4), rand(.45, 1.8), d.z * side + rand(-.4, .4),
+            rand(7, 12), rand(.004, .013), 0, c, c, 1, 1.5, 6.5, .025, 1, groundY);
+        }
+        if (j === samples - 1 || energy > 1.25) {
+          glowAt(q, .07 + energy * .065, C.white, rand(.025, .055));
+          floorPulse(q.x, q.z, C.amber, .18 + .28 * energy, .16 + .2 * energy, 18, groundY);
+        }
       }
-      const q = pts[i - 1], big = i === n || Math.floor(i / 24) !== Math.floor(start / 24);
-      if (t - lastSound >= .035 || i === n) {
-        sfx.pop(panFor(q), 0, big ? 1.25 : rand(.65, 1)); lastSound = t;
+      const q = pts[i - 1];
+      if (t >= smokeAt) {
+        puff(q.x + rand(-.02, .02), q.y + .02, q.z + rand(-.02, .02), rand(-.12, .12), rand(.18, .42), rand(-.12, .12),
+          rand(2.7, 4.8), rand(.07, .15), rand(.12, .25), [.64, .48, .29], [.36, .34, .3], rand(.09, .16), .6, -.04, .05, 0, groundY);
+        smokeAt = t + rand(.065, .14);
       }
-      glowAt({ x: q.x, y: groundY + .04, z: q.z }, big ? .5 : .3, C.white, .06);
-      floorPulse(q.x, q.z, [1, .72, .4], big ? 1 : .6, .9, 12, groundY);
-      lightScene([1, .75, .45], big ? .12 : .06);
-      if (t - lastSmoke >= .12) { groundSmoke(q.x, groundY + .06, q.z, [.5, .38, .24], 1, .1, .5); vibrate(7); lastSmoke = t; }
+      if (t - lastHaptic > .16) { vibrate(5); lastHaptic = t; }
     }
-    if (i >= n) { inst.removeFromParent(); inst.dispose(); mat.dispose(); cap.dispose(); cord.removeFromParent(); cordGeo.dispose(); cordMat.dispose(); return false; }
+    if (i >= n) {
+      retireBodies(); emitter.ground = false; emitter.largeWala = false; emitter.phase = 'afterglow';
+      ashMat.opacity = .72 * Math.max(0, 1 - (t - burn.duration) / 3.2);
+      if (t >= burn.duration + 3.2) { ash.removeFromParent(); ashGeo.dispose(); ashMat.dispose(); return false; }
+    }
     return true;
-  } });
+  } };
+  addEmitter(emitter);
 }
 
 /* ---------- The tray ---------- */

@@ -188,19 +188,31 @@ paper bodies, pressed caps, raised bindings and a curved fuse that burns back to
 the body. Floor light, contact shadows, sparks and smoke depth-test against these
 bodies; a glow no longer paints the camera image over the solid object.
 
-100, 1,000 and 10,000 wala options contain their stated instance counts. Each
-forms a single flowing S-shaped garland with a connecting fuse; larger counts
-form a fuller garland following the same curve. Bodies follow its local bends.
-The shape captures the view once and remains fixed in world space. Burning reduces the
-instance draw count instead of uploading every transform again. Particle/audio
-events are batched per frame and only one 10,000 string can run at a time. The
-10,000 sequence takes approximately 30 seconds, excluding tracking pauses.
+100, 1,000 and 10,000 wala options contain their stated instance counts.
+Each placement creates a new, stable asymmetric S with paired-sided bodies,
+varied paper shades, imperfect angles and sizes. Dense 10,000 bodies form small
+layered packets around one cord instead of twenty flat parallel lanes. The
+compressed footprint is an AR presentation choice, not a physical scale claim.
+
+Seeded burst runs alternate faster clusters and short hesitations, with
+nonperiodic accents and a denser closing run. Typical fuse-to-last-pop times are
+about 5 / 12 / 30 seconds, followed by a 3.2-second fading charred cord. A small
+section near the burn front hops in the vertex shader; instance matrices remain
+fixed. Sparks, torn paper, local light and smoke follow the moving burn front.
+
+Short synthesized audio buffers retain within-frame snap timing; dense events
+are mixed before playback instead of creating hundreds of sound nodes. Work is
+bounded to 96 representative pops per audio window, six visual burst samples
+per frame and shared particle pools. Only one active 10,000 string is allowed.
+Hand holding, throwing/dropping, upright landing and world anchoring are retained.
+See `namma-wala-effects.md` for research, artistic choices and verification limits.
 
 - `node --test tests/namma-vedis-*.test.mjs`: orientation, world coordinates,
   camera translation, reticle lifecycle, tracking loss/recovery, startup failure,
   audio completion gate, opaque model geometry and disposal, continuous S-shaped
   layout, all 10,000 instances and their lifecycle in the actual application.
-  All 59 checks pass, including held-object stabilization, robust depth,
+  All 67 checks pass, including wala layout variation, burst cadence, bounded
+  audio synthesis, local recoil shader wiring, held-object stabilization, robust depth,
   responsive deliberate movement, continuous release, automatic palm selection, all eight palm effects
   dropping upright, continuous fountain timing, held/midair/landed bomb bursts,
   throw noise rejection, camera-pose compensation, refresh-rate-independent flight

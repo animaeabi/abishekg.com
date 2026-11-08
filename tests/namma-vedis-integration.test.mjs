@@ -119,18 +119,22 @@ test('actual app: placement, new ground effects, release regressions and mixed-e
   const string = qa.world.getObjectByName('wala-10000');
   assert.ok(string?.isInstancedMesh); assert.equal(string.count, 10000);
   assert.ok(string.material.every(m => m.isMeshStandardMaterial && !m.transparent && m.depthWrite));
+  assert.equal(string.geometry.attributes.iWalaAt.count, 10000);
+  assert.equal(string.geometry.attributes.iWalaKick.count, 10000);
+  assert.ok(string.instanceColor, 'individual paper shades break up the repeated bodies');
   assert.equal(qa.ring.visible, false);
   const matrices = string.instanceMatrix.array.slice(), version = string.instanceMatrix.version;
   const largeCount = qa.emitters.filter(e => e.largeWala).length;
   assert.equal(qa.fireAt(195, 422), false); assert.equal(qa.emitters.filter(e => e.largeWala).length, largeCount);
   qa.camera.position.set(2, 1.4, 1); qa.camera.rotation.y = 1; qa.camera.updateMatrixWorld();
   qa.tick(1);
-  assert.ok(string.count < 10000 && string.count > 9700, 'burn advances through individual crackers');
+  assert.ok(string.count < 10000 && string.count > 9000, 'burn advances through individual crackers');
   assert.deepEqual(string.instanceMatrix.array, matrices, 'camera movement and burning never rewrite placed transforms');
   assert.equal(string.instanceMatrix.version, version, 'no full matrix uploads during burning');
   qa.tick(42);
   assert.equal(qa.world.getObjectByName('wala-10000'), undefined);
   assert.equal(qa.world.getObjectByName('wala-fuse-10000'), undefined);
+  assert.equal(qa.world.getObjectByName('wala-ash-10000'), undefined, 'charred cord finishes its afterglow and is disposed');
   assert.equal(qa.emitters.some(e => e.largeWala), false, 'completed string frees the next 10,000 launch');
   qa.simulate(45);
 
@@ -216,13 +220,17 @@ test('actual app: placement, new ground effects, release regressions and mixed-e
     const nodes = [], param = () => ({ value: 0, setValueAtTime: noop, exponentialRampToValueAtTime: noop });
     const node = (type) => { const value = { type, gain: param(), frequency: param(), Q: param(), pan: param(), connects: [], disconnected: 0,
       connect(target) { this.connects.push(target); }, disconnect() { this.disconnected++; this.connects = []; }, start: noop, stop: noop }; nodes.push(value); return value; };
-    const context = { currentTime: 0, state: 'running', createGain: () => node('gain'), createStereoPanner: () => node('panner'),
+    const context = { currentTime: 0, state: 'running', sampleRate: 8000,
+      createBuffer: (_channels, length) => { const samples = new Float32Array(length); return { getChannelData: () => samples }; },
+      createGain: () => node('gain'), createStereoPanner: () => node('panner'),
       createOscillator: () => node('oscillator'), createBufferSource: () => node('source'), createBiquadFilter: () => node('filter') };
     qa.useAudio(context); const persistent = nodes.length;
     qa.tone({ f0: 300, dur: .2, vol: .1, wet: .2 }); qa.noise({ f0: 2000, dur: .2, vol: .1, wet: .2 });
+    qa.wala(new RealThree.Vector3(0, 0, -1), qa.WALAS.wala100); qa.tick(.7);
+    assert.ok(nodes.some(n => n.buffer?.getChannelData?.(0).some(v => v !== 0)), 'wala schedules synthesized snap buffers');
     for (const n of nodes) if (n.onended) n.onended();
     assert.ok(nodes.slice(persistent).every(n => n.disconnected === 1 && n.connects.length === 0));
-    assert.ok(nodes.slice(0, persistent).every(n => n.disconnected === 0)); qa.useAudio(null);
+    assert.ok(nodes.slice(0, persistent).every(n => n.disconnected === 0)); qa.useAudio(null); qa.tick(20);
   });
 
   await t.test('browser Back restores a paused AR session instead of a stopped camera', () => {
