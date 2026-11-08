@@ -46,15 +46,19 @@ test('actual app: placement, new ground effects, release regressions and mixed-e
   let source = await readFile(path, 'utf8');
   source = source.replace("import * as THREE from 'three';", 'const THREE = globalThis.__nammaTestThree;');
   source = source.replace(/from '(\.\/[^']+)'/g, (_, p) => `from '${new URL(p, path).href}'`);
-  source += `\nexport const qa = { camera, world, ring, emitters, P, S, pulses, selected, atomSequence, placementGuide,
+  source += `\nexport const qa = { camera, world, palmWorld, handAnchor, ring, emitters, P, S, pulses, selected, atomSequence, placementGuide,
+    cancelPalmEffect, syncAudioPlayback, sparkMat, smokeMat, outHand, sHand, handState,
     fireAt, setMode, updateCamera, updateRing, step, queueSkyWish, writeSky, scatterPaper, updateSmoke, sSize, smokeGeo, trackingState,
     flowerPot, sanguchakram, wala, WALAS, royalShow, peony, chrysanthemum, goldenRain, crackling, diamondBurst, launch, tone, noise,
     init() { playing = true; floorY = 0; worldTracking = { active: true, ready: true, hit: () => null }; },
     setFloor(y) { floorY = y; },
     setTracker(tracker) { worldTracking = tracker; },
     useAudio(context) { actx = context; master = context?.createGain(); verbIn = context?.createGain(); noiseBuf = {}; },
+    useHandAudio(context) { handAudio = context ? { actx: context, master: context.createGain() } : null; },
+    palm(pose) { for (let i = 0; i < 3; i++) handAnchor.update(pose, last); handState(); },
     clearParticles() { P.life.fill(0); S.life.fill(0); head = 0; sHead = 0; },
     simulate(seconds, hz = 60) { for (let j = 0; j < Math.ceil(seconds * hz); j++) step(last + 1000 / hz); },
+    simulateHand(seconds, hz = 60) { for (let j = 0; j < Math.ceil(seconds * hz); j++) { handAnchor.lastSeen = last + 1000 / hz; step(last + 1000 / hz); } },
     stats() { return { sparks: sparkGeo.instanceCount, smoke: smokeGeo.instanceCount, emitters: emitters.length, objects: world.children.length }; },
     tick(dt) { for (let i = emitters.length - 1; i >= 0; i--) if (!emitters[i].update(dt)) emitters.splice(i, 1); },
   };`;
@@ -237,5 +241,60 @@ test('actual app: placement, new ground effects, release regressions and mixed-e
     qa.setTracker(tracker); qa.useAudio(context); qa.trackingState(false); assert.equal(context.state, 'suspended');
     tracker.ready = true; qa.trackingState(true); assert.equal(context.state, 'running');
     qa.useAudio(null);
+  });
+
+  const palm = () => ({ position: new RealThree.Vector3(0, -.1, -.55),
+    quaternion: new RealThree.Quaternion().setFromAxisAngle(new RealThree.Vector3(1, 0, 0), Math.PI / 2), width: .08, label: 'Left' });
+  await t.test('automatic palm placement moves only palm effects while floor effects keep running', () => {
+    qa.init(); qa.camera.position.set(0, 1.4, 0); qa.camera.rotation.set(-.7, 0, 0); qa.setMode('ground'); qa.camera.updateMatrixWorld();
+    qa.selected.ground = 'flower'; qa.fireAt(195, 422);
+    const floorPot = qa.world.getObjectByName('cracker-flower'), original = floorPot.position.clone();
+    qa.palm(palm()); qa.simulateHand(.05); qa.updateRing(0);
+    assert.equal(elements.get('mode').textContent, 'Palm · Auto'); assert.equal(qa.ring.parent, qa.palmWorld); assert.equal(qa.ring.visible, true);
+    qa.fireAt(195, 422); const handPot = qa.palmWorld.getObjectByName('cracker-flower');
+    assert.ok(handPot); assert.equal(qa.ring.visible, false);
+    assert.equal(qa.fireAt(195, 422), false, 'one active palm effect');
+    qa.simulateHand(1.5);
+    const before = handPot.getWorldPosition(new RealThree.Vector3());
+    const moved = palm(); moved.position.x = .25; qa.palm(moved); qa.simulateHand(.5);
+    assert.ok(handPot.getWorldPosition(new RealThree.Vector3()).distanceTo(before) > .2);
+    assert.deepEqual(floorPot.position.toArray(), original.toArray());
+    assert.ok(qa.outHand.some(v => v === 1) && qa.outHand.some(v => v === 0));
+    assert.equal(qa.sparkMat.uniforms.uPalm.value, qa.palmWorld.matrixWorld);
+    assert.equal(qa.smokeMat.uniforms.uPalm.value, qa.palmWorld.matrixWorld);
+    const handEmitter = qa.emitters.find(e => e.flower && e.space === qa.palmWorld);
+    qa.handAnchor.invalidate(); qa.handState(); qa.simulate(2);
+    assert.equal(qa.palmWorld.visible, false); assert.equal(handEmitter.phase, 'fountain');
+    assert.equal(qa.ring.parent, qa.world); assert.equal(elements.get('mode').textContent, 'Floor · AR');
+    assert.ok(qa.emitters.some(e => e.flower && e.space === qa.world), 'floor keeps its own lifetime');
+    qa.palm(moved); qa.simulateHand(16); assert.equal(qa.emitters.some(e => e.ground), false);
+    qa.cancelPalmEffect(); qa.handAnchor.invalidate(); qa.handState();
+  });
+
+  await t.test('every floor cracker dispatches on the palm and releases its owned geometry', () => {
+    for (const id of ['atom', 'sutli', 'lakshmi', 'flower', 'spinner', 'wala100', 'wala1000', 'wala10000']) {
+      qa.init(); qa.palm(palm()); qa.simulateHand(.05); qa.selected.ground = id; qa.fireAt(195, 422);
+      assert.ok(qa.emitters.some(e => e.ground && e.space === qa.palmWorld), id);
+      if (id === 'wala10000') assert.equal(qa.palmWorld.getObjectByName('wala-10000').count, 10000);
+      qa.simulateHand(id === 'wala10000' ? 40 : 20); t.mock.timers.tick(3000);
+      assert.equal(qa.atomSequence.busy, false); assert.equal(qa.emitters.some(e => e.ground && e.space === qa.palmWorld), false, id);
+      qa.cancelPalmEffect(); assert.ok(qa.palmWorld.children.every(o => o === qa.ring));
+      qa.handAnchor.invalidate(); qa.handState();
+    }
+  });
+
+  await t.test('palm audio pauses independently and prolonged hand loss cannot leave Atom locked', () => {
+    const context = () => ({ state: 'running', createGain: () => ({}),
+      suspend() { this.state = 'suspended'; return Promise.resolve(); }, resume() { this.state = 'running'; return Promise.resolve(); }, close() { this.state = 'closed'; return Promise.resolve(); } });
+    qa.init(); qa.palm(palm()); const room = context(), hand = context(); qa.useAudio(room); qa.useHandAudio(hand);
+    qa.handAnchor.invalidate(); qa.handState(); assert.equal(room.state, 'running'); assert.equal(hand.state, 'suspended');
+    qa.palm(palm()); assert.equal(hand.state, 'running'); qa.useAudio(null); qa.useHandAudio(null);
+    qa.selected.ground = 'atom'; qa.fireAt(195, 422); assert.equal(qa.atomSequence.busy, true);
+    qa.handAnchor.invalidate(); qa.handState(); qa.simulate(5.1);
+    assert.equal(qa.atomSequence.busy, false); assert.equal(qa.emitters.some(e => e.space === qa.palmWorld), false);
+    assert.ok(qa.palmWorld.children.every(o => o === qa.ring));
+    qa.selected.ground = 'flower'; qa.camera.rotation.set(-.7, 0, 0); qa.camera.updateMatrixWorld(); qa.fireAt(195, 422);
+    assert.ok(qa.world.getObjectByName('cracker-flower'), 'floor placement is available after cancellation');
+    qa.simulate(20);
   });
 });

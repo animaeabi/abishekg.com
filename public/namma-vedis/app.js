@@ -7,6 +7,11 @@ import { waitForWorldEngine, createWorldTracking } from './world-tracking.mjs';
 import { AtomSequence, playAtomAftertone } from './atom-aftertone.mjs';
 import { createCrackerModel, addCrackerLights } from './cracker-models.mjs';
 import { WALA_CONFIGS, createWalaLayout } from './wala-layout.mjs';
+import { HandAnchor, palmPose, handEffectScale } from './hand-anchor.mjs';
+import { createHandTracking } from './hand-tracking.mjs';
+const handAnchor = new HandAnchor();
+let handTracker = null, handWasReady = false, handAudio = null;
+let atomRun = 0, atomOnPalm = false;
 const atomSequence = new AtomSequence();
 let worldTracking = null, trackingStarting = false;
 const placementGuide = new PlacementGuide();
@@ -49,6 +54,10 @@ renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
 renderer.setClearColor(0x000000, 1);
 const scene = new THREE.Scene();
 const world = new THREE.Group(); scene.add(world);
+const palmWorld = new THREE.Group(); scene.add(palmWorld); palmWorld.visible = false;
+let effectSpace = world;
+const roomPaused = () => Boolean(playing && worldTracking?.active && !worldTracking.ready);
+const spacePaused = space => space === palmWorld ? !handAnchor.ready : roomPaused();
 addCrackerLights(scene);
 const camera = new THREE.PerspectiveCamera(70, 1, 0.05, 900);
 scene.add(camera);
@@ -106,7 +115,7 @@ world.add(skyLight);
 let sceneLight = 0;
 const sceneLightC = new THREE.Vector3();
 function lightScene(c, amt) {
-  if (amt < sceneLight * .6) return;
+  if (effectSpace === palmWorld || amt < sceneLight * .6) return;
   sceneLight = Math.max(sceneLight, amt);
   sceneLightC.set(c[0], c[1], c[2]);
 }
@@ -128,7 +137,7 @@ for (let i = 0; i < 8; i++) {
       }`,
   }));
   m.frustumCulled = false; m.renderOrder = 1; m.visible = false;
-  world.add(m);
+  scene.add(m);
   pools.push(m);
 }
 let poolN = 0;
@@ -136,19 +145,24 @@ function floorGlow(x, z, c, intensity, radius, groundY = floorY) {
   if (poolN >= pools.length) return;
   const m = pools[poolN++];
   m.position.set(x, groundY + .004, z);
-  m.scale.setScalar(radius);
+  m.quaternion.identity();
+  if (effectSpace === palmWorld) {
+    radius = Math.min(radius, (handAnchor.pose?.width || .08) * .44 / palmWorld.scale.x);
+    m.position.applyMatrix4(palmWorld.matrixWorld); m.quaternion.copy(palmWorld.quaternion);
+    m.scale.setScalar(radius * palmWorld.scale.x);
+  } else m.scale.setScalar(radius);
   m.material.uniforms.uC.value.setRGB(c[0] * intensity, c[1] * intensity, c[2] * intensity);
   m.visible = true;
 }
 const pulses = [];
-const floorPulse = (x, z, c, intensity, radius, decay, groundY = floorY) => pulses.push({ x, z, c, i: intensity, r: radius, d: decay, groundY });
+const floorPulse = (x, z, c, intensity, radius, decay, groundY = floorY) => pulses.push({ x, z, c, i: intensity, r: radius, d: decay, groundY, space: effectSpace });
 
 /* ---------- Sparks: stretched along their motion, the way a camera shutter records them ---------- */
 const N = 10000;
 const F = { TRAIL: 1, TWINKLE: 2, BOUNCE: 4, CRACKLE: 8, LATE: 16, SEG: 32 };
 const P = {};
 for (const k of ['x', 'y', 'z', 'vx', 'vy', 'vz', 'age', 'life', 'size', 'r', 'g', 'b', 'r2', 'g2', 'b2', 'drag', 'grav', 'tl', 'tt', 'str', 'glow', 'groundY']) P[k] = new Float32Array(N);
-P.flag = new Uint8Array(N);
+P.flag = new Uint8Array(N); P.hand = new Uint8Array(N);
 let head = 0, aliveCount = 0;
 const outPos = new Float32Array(N * 3), outVel = new Float32Array(N * 3), outCol = new Float32Array(N * 4), outSize = new Float32Array(N * 3);
 const QUAD = new Float32Array([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0]), QUAD_I = [0, 1, 2, 0, 2, 3];
@@ -160,23 +174,26 @@ function instanced(...attrs) {
   g.instanceCount = 0;
   return g;
 }
-const sparkGeo = instanced(['iPos', outPos, 3], ['iVel', outVel, 3], ['iCol', outCol, 4], ['iSize', outSize, 3]);
+const outHand = new Float32Array(N);
+const sparkGeo = instanced(['iHand', outHand, 1], ['iPos', outPos, 3], ['iVel', outVel, 3], ['iCol', outCol, 4], ['iSize', outSize, 3]);
 const sparkMat = new THREE.ShaderMaterial({
   ...ADD,
   depthTest: true,
-  uniforms: { uScale: { value: 1000 }, uMin: { value: 1.5 }, uRes: shared.uRes },
+  uniforms: { uPalm: { value: palmWorld.matrixWorld }, uScale: { value: 1000 }, uMin: { value: 1.5 }, uRes: shared.uRes },
   vertexShader: `
+    attribute float iHand; uniform mat4 uPalm;
     attribute vec3 iPos; attribute vec3 iVel; attribute vec4 iCol; attribute vec3 iSize;
     uniform float uScale; uniform float uMin; uniform vec2 uRes;
     varying vec4 vC; varying vec2 vP; varying float vH; varying float vR; varying float vG;
     void main() {
-      vec4 a = viewMatrix * vec4(iPos, 1.0);
+      mat4 space = iHand > .5 ? uPalm : mat4(1.0);
+      vec4 a = viewMatrix * space * vec4(iPos, 1.0);
       if (a.z > -0.04) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
-      vec4 b = viewMatrix * vec4(iPos - iVel * iSize.y, 1.0);
+      vec4 b = viewMatrix * space * vec4(iPos - iVel * iSize.y, 1.0);
       if (b.z > -0.04) b = a;
       vec4 pa = projectionMatrix * a, pb = projectionMatrix * b;
       vec2 sa = pa.xy / pa.w * uRes * 0.5, sb = pb.xy / pb.w * uRes * 0.5;
-      float r = clamp(iSize.x * uScale / -a.z, uMin, 520.0);
+      float r = clamp(iSize.x * length(space[0].xyz) * uScale / -a.z, uMin, 520.0);
       vec2 d = sa - sb; float len = length(d);
       vec2 ux = len > 0.01 ? d / len : vec2(1.0, 0.0), uy = vec2(-ux.y, ux.x);
       float h = len * 0.5;
@@ -201,11 +218,12 @@ const sparkMat = new THREE.ShaderMaterial({
 });
 const sparks = new THREE.Mesh(sparkGeo, sparkMat);
 sparks.frustumCulled = false; sparks.renderOrder = 3;
-world.add(sparks);
+scene.add(sparks);
 
 function spawn(x, y, z, vx, vy, vz, life, size, c1, c2, drag, grav, flag = 0, tl = 0, str = .033, glow = 0, groundY = floorY) {
   const i = head; head = (head + 1) % N;
   P.x[i] = x; P.y[i] = y; P.z[i] = z; P.vx[i] = vx; P.vy[i] = vy; P.vz[i] = vz;
+  P.hand[i] = effectSpace === palmWorld ? 1 : 0;
   P.age[i] = 0; P.life[i] = life; P.size[i] = size;
   P.r[i] = c1[0]; P.g[i] = c1[1]; P.b[i] = c1[2]; P.r2[i] = c2[0]; P.g2[i] = c2[1]; P.b2[i] = c2[2];
   P.drag[i] = drag; P.grav[i] = grav; P.flag[i] = flag; P.tl[i] = tl; P.tt[i] = 0; P.str[i] = str; P.glow[i] = glow; P.groundY[i] = groundY;
@@ -218,6 +236,8 @@ function updateSparks(dt) {
   const trailGap = quality > .8 ? .03 : .05;
   for (let i = 0; i < N; i++) {
     if (P.life[i] <= 0) continue;
+    effectSpace = P.hand[i] ? palmWorld : world;
+    if (spacePaused(effectSpace)) continue;
     P.age[i] += dt;
     const fl = P.flag[i];
     if (P.age[i] >= P.life[i]) {
@@ -248,24 +268,28 @@ function updateSparks(dt) {
         spawn(P.x[i], P.y[i], P.z[i], P.vx[i], P.vy[i], P.vz[i], P.tl[i] * rand(.7, 1.1), P.size[i] * .46, [r * .95, g * .72, b * .5], C.charcoal, 0, P.grav[i] * .16, F.SEG, 0, Math.max(trailGap, dt) * 1.25, -1);
       }
     }
+    outHand[n] = P.hand[i];
     outPos[n * 3] = P.x[i]; outPos[n * 3 + 1] = P.y[i]; outPos[n * 3 + 2] = P.z[i];
     outVel[n * 3] = P.vx[i]; outVel[n * 3 + 1] = P.vy[i]; outVel[n * 3 + 2] = P.vz[i];
     outCol[n * 4] = r; outCol[n * 4 + 1] = g; outCol[n * 4 + 2] = b; outCol[n * 4 + 3] = a;
     outSize[n * 3] = P.size[i]; outSize[n * 3 + 1] = P.str[i]; outSize[n * 3 + 2] = P.glow[i];
     n++;
   }
+  effectSpace = world;
   aliveCount = n;
   sparkGeo.instanceCount = n;
-  for (const name of ['iPos', 'iVel', 'iCol', 'iSize']) sparkGeo.attributes[name].needsUpdate = true;
+  for (const name of ['iHand', 'iPos', 'iVel', 'iCol', 'iSize']) sparkGeo.attributes[name].needsUpdate = true;
 }
 
 /* ---------- Smoke, and the paper a cracker leaves behind ---------- */
 const M = 1400;
 const S = {};
 for (const k of ['x', 'y', 'z', 'vx', 'vy', 'vz', 'age', 'life', 'size', 'grow', 'rot', 'spin', 'r', 'g', 'b', 'r2', 'g2', 'b2', 'a', 'drag', 'grav', 'wind', 'hard', 'groundY']) S[k] = new Float32Array(M);
+S.hand = new Uint8Array(M);
 let sHead = 0;
 const sPos = new Float32Array(M * 3), sCol = new Float32Array(M * 4), sSize = new Float32Array(M * 3);
-const smokeGeo = instanced(['iPos', sPos, 3], ['iCol', sCol, 4], ['iSize', sSize, 3]);
+const sHand = new Float32Array(M);
+const smokeGeo = instanced(['iHand', sHand, 1], ['iPos', sPos, 3], ['iCol', sCol, 4], ['iSize', sSize, 3]);
 const smokeTex = (() => {
   const c = document.createElement('canvas'); c.width = c.height = 128;
   const x = c.getContext('2d');
@@ -278,21 +302,23 @@ const smokeTex = (() => {
   return new THREE.CanvasTexture(c);
 })();
 const smokeMat = new THREE.ShaderMaterial({
-  uniforms: { uTex: { value: smokeTex } },
+  uniforms: { uTex: { value: smokeTex }, uPalm: { value: palmWorld.matrixWorld } },
   transparent: true, depthTest: true, depthWrite: false, toneMapped: false,
   blending: THREE.CustomBlending, blendEquation: THREE.AddEquation, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor, blendSrcAlpha: THREE.ZeroFactor, blendDstAlpha: THREE.OneFactor,
   vertexShader: `
+    attribute float iHand; uniform mat4 uPalm;
     attribute vec3 iPos; attribute vec4 iCol; attribute vec3 iSize;
     varying vec2 vUv; varying vec4 vC; varying float vHard;
     void main() {
       vUv = position.xy * 0.5 + 0.5; vC = iCol; vHard = iSize.z;
       float c = cos(iSize.y), s = sin(iSize.y);
       vec2 offset = vec2(position.x * c - position.y * s, position.x * s + position.y * c) * iSize.x;
-      vec4 mv = viewMatrix * vec4(iPos, 1.0);
+      mat4 space = iHand > .5 ? uPalm : mat4(1.0);
+      vec4 mv = viewMatrix * space * vec4(iPos, 1.0);
       // Landed paper lies on the original floor, rather than turning to face
       // the camera like airborne smoke. This keeps its shape fixed in AR.
-      if (iSize.z > 1.5) mv = viewMatrix * vec4(iPos + vec3(offset.x, 0.0, offset.y), 1.0);
-      else mv.xy += offset;
+      if (iSize.z > 1.5) mv = viewMatrix * space * vec4(iPos + vec3(offset.x, 0.0, offset.y), 1.0);
+      else mv.xy += offset * length(space[0].xyz);
       gl_Position = projectionMatrix * mv;
     }`,
   fragmentShader: `
@@ -308,9 +334,10 @@ const smokeMat = new THREE.ShaderMaterial({
 });
 const smoke = new THREE.Mesh(smokeGeo, smokeMat);
 smoke.frustumCulled = false; smoke.renderOrder = 2;
-world.add(smoke);
+scene.add(smoke);
 function puff(x, y, z, vx, vy, vz, life, size, grow, lit, base, alpha, drag, grav, wind, hard = 0, groundY = floorY) {
   const i = sHead; sHead = (sHead + 1) % M;
+  S.hand[i] = effectSpace === palmWorld ? 1 : 0;
   S.x[i] = x; S.y[i] = y; S.z[i] = z; S.vx[i] = vx; S.vy[i] = vy; S.vz[i] = vz; S.age[i] = 0; S.life[i] = life; S.size[i] = size; S.grow[i] = grow;
   S.rot[i] = rand(0, TAU); S.spin[i] = rand(-.5, .5) * (hard ? 12 : 1);
   S.r[i] = lit[0]; S.g[i] = lit[1]; S.b[i] = lit[2]; S.r2[i] = base[0]; S.g2[i] = base[1]; S.b2[i] = base[2];
@@ -319,7 +346,7 @@ function puff(x, y, z, vx, vy, vz, life, size, grow, lit, base, alpha, drag, gra
 function updateSmoke(dt) {
   let n = 0;
   for (let i = 0; i < M; i++) {
-    if (S.life[i] <= 0) continue;
+    if (S.life[i] <= 0 || spacePaused(S.hand[i] ? palmWorld : world)) continue;
     S.age[i] += dt;
     if (S.age[i] >= S.life[i]) { S.life[i] = 0; continue; }
     const damp = Math.exp(-S.drag[i] * dt);
@@ -335,6 +362,7 @@ function updateSmoke(dt) {
     }
     const k = S.age[i] / S.life[i], m = hard ? 0 : Math.min(1, k * 4);
     const lift = hard ? clamp(ambLum * 2.6, .28, 1.05) : 1;
+    sHand[n] = S.hand[i];
     sPos[n * 3] = S.x[i]; sPos[n * 3 + 1] = S.y[i]; sPos[n * 3 + 2] = S.z[i];
     sCol[n * 4] = (S.r[i] + (S.r2[i] - S.r[i]) * m) * lift; sCol[n * 4 + 1] = (S.g[i] + (S.g2[i] - S.g[i]) * m) * lift; sCol[n * 4 + 2] = (S.b[i] + (S.b2[i] - S.b[i]) * m) * lift;
     sCol[n * 4 + 3] = S.a[i] * (hard ? (k < .85 ? 1 : 1 - (k - .85) / .15) : Math.min(1, k * 7) * (1 - k));
@@ -343,16 +371,19 @@ function updateSmoke(dt) {
     n++;
   }
   smokeGeo.instanceCount = n;
-  for (const name of ['iPos', 'iCol', 'iSize']) smokeGeo.attributes[name].needsUpdate = true;
+  for (const name of ['iHand', 'iPos', 'iCol', 'iSize']) smokeGeo.attributes[name].needsUpdate = true;
 }
 
 /* ---------- Sound, all synthesized ---------- */
 let actx = null, master = null, noiseBuf = null, verbIn = null, muted = false;
 function syncAudioPlayback() {
-  if (!actx) return;
-  const paused = document.hidden || (playing && worldTracking?.active && !worldTracking.ready);
-  if (paused) { if (actx.state === 'running') actx.suspend()?.catch(() => {}); }
-  else if (actx.state !== 'running') actx.resume()?.catch(() => {});
+  const sync = (context, paused) => {
+    if (!context) return;
+    if (document.hidden || paused) { if (context.state === 'running') context.suspend()?.catch(() => {}); }
+    else if (context.state !== 'running') context.resume()?.catch(() => {});
+  };
+  sync(actx, spacePaused(effectSpace));
+  if (handAudio?.actx !== actx) sync(handAudio?.actx, !handAnchor.ready);
 }
 function ensureAudio() {
   if (!actx) {
@@ -509,11 +540,31 @@ function placementPoint(cx, cy) {
   }
   return floorPoint(rayAt(cx, cy));
 }
-function panFor(p) { tmp.copy(p).applyMatrix4(camera.matrixWorldInverse); return clamp(tmp.x / Math.max(1, tmp.length()), -1, 1) * .85; }
+function panFor(p) { tmp.copy(p); if (effectSpace === palmWorld) palmWorld.localToWorld(tmp); tmp.applyMatrix4(camera.matrixWorldInverse); return clamp(tmp.x / Math.max(1, tmp.length()), -1, 1) * .85; }
+function burnTip(model, progress, flame) {
+  const tip = model.burn(progress, flame);
+  return effectSpace === palmWorld ? palmWorld.worldToLocal(tip) : tip;
+}
 function randDir() { const u = Math.random() * 2 - 1, t = Math.random() * TAU, s = Math.sqrt(1 - u * u); return [Math.cos(t) * s, u, Math.sin(t) * s]; }
 
 /* ---------- Sky shells ---------- */
 const emitters = [];
+function withEffectSpace(space, work) {
+  const before = effectSpace, sound = { actx, master, noiseBuf, verbIn };
+  effectSpace = space;
+  if (space === palmWorld) ({ actx = null, master = null, noiseBuf = null, verbIn = null } = handAudio || {});
+  try { return work(); }
+  finally {
+    if (space === palmWorld) handAudio = { actx, master, noiseBuf, verbIn };
+    ({ actx, master, noiseBuf, verbIn } = sound); effectSpace = before;
+  }
+}
+function addEmitter(emitter) {
+  const update = emitter.update, space = effectSpace;
+  emitter.space = space;
+  emitter.update = dt => spacePaused(space) ? true : withEffectSpace(space, () => update(dt));
+  emitters.push(emitter);
+}
 let shake = 0;
 const glowAt = (p, size, c, life) => spawn(p.x, p.y, p.z, 0, 0, 0, life, size, c, c, 0, 0, 0, 0, 0, 1);
 const SMOKE_BASE = [.14, .13, .135];
@@ -570,7 +621,7 @@ function launch(target, burst, T = rand(.6, .78), silent = false, view = VIEW())
   const pos = new THREE.Vector3(), last = start.clone();
   if (!silent) sfx.lift(panFor(target));
   let t = 0;
-  emitters.push({ update(dt) {
+  addEmitter({ update(dt) {
     t += dt;
     const k = Math.min(1, t / T), e = 1 - (1 - k) * (1 - k);
     pos.lerpVectors(start, target, e);
@@ -607,7 +658,7 @@ function rocket(target) {
   const burn = rand(.95, 1.15), T = burn + rand(.32, .46), ember = [.8, .3, .06];
   sfx.fizz(burn + .2, panFor(target));
   let t = 0;
-  emitters.push({ update(dt) {
+  addEmitter({ update(dt) {
     t += dt;
     const e = t < burn ? .8 * Math.pow(t / burn, 1.7) : .8 + .2 * (1 - Math.pow(1 - Math.min(1, (t - burn) / (T - burn)), 2));
     pos.lerpVectors(start, target, e).addScaledVector(r, Math.sin(Math.PI * e) * bow + Math.sin(t * 30 + wob) * .14 * (1 - e));
@@ -630,7 +681,7 @@ function twelveShot(target) {
   const view = VIEW(), { r, origin } = view, dist = target.distanceTo(origin);
   const dir = target.clone().sub(origin).normalize();
   let t = 0, n = 0;
-  emitters.push({ update(dt) {
+  addEmitter({ update(dt) {
     t += dt;
     while (n < 12 && n * .24 <= t) {
       const off = ((n % 2 ? 1 : -1) * (6 - Math.abs(n - 6))) * .05 + rand(-.015, .015);
@@ -648,7 +699,7 @@ function finale() {
   for (let i = 0; i < 7; i++) plan.push({ at: 7.1 + rand(0, .4), fn: chrysanthemum });
   plan.sort((a, b) => a.at - b.at);
   let t = 0, n = 0;
-  emitters.push({ finale: true, update(dt) {
+  addEmitter({ finale: true, update(dt) {
     t += dt;
     while (n < plan.length && plan[n].at <= t) {
       const d = f.clone().addScaledVector(r, rand(-.34, .34)).addScaledVector(u, rand(-.28, .5)).normalize().multiplyScalar(rand(100, 140)).add(origin);
@@ -717,12 +768,13 @@ const G = {
 };
 let ambLum = .4;
 function contactShadow(x, z, radius, opacity, groundY = floorY) {
+  if (effectSpace === palmWorld) radius = Math.min(radius, (handAnchor.pose?.width || .08) * .42 / palmWorld.scale.x);
   const mat = new THREE.MeshBasicMaterial({ map: TEX.shadow, transparent: true, opacity, depthWrite: false, depthTest: true, toneMapped: false });
   const m = new THREE.Mesh(G.plane, mat);
   m.position.set(x, groundY + .003, z);
   m.scale.setScalar(radius);
   m.frustumCulled = false; m.renderOrder = 1;
-  world.add(m);
+  effectSpace.add(m);
   return m;
 }
 const dropProp = (p) => { p.model.dispose(); p.shadow.material.dispose(); p.shadow.removeFromParent(); };
@@ -746,13 +798,13 @@ const BOMBS = {
 function bomb(p, b) {
   const groundY = p.y;
   const { power, fuse } = b, model = createCrackerModel(b.kind, TEX), pan = panFor(p), R = .35 + .65 * power;
-  model.group.position.copy(p); world.add(model.group);
+  model.group.position.copy(p); effectSpace.add(model.group);
   const prop = { model, shadow: contactShadow(p.x, p.z, b.shadow, .55, groundY) };
   sfx.fuse(fuse, pan);
   let t = 0;
-  emitters.push({ ground: true, update(dt) {
+  addEmitter({ ground: true, update(dt) {
     t += dt;
-    const tip = model.burn(t / fuse, .05 + Math.random() * .08);
+    const tip = burnTip(model, t / fuse, .05 + Math.random() * .08);
     if (t < fuse) {
       for (let k = 0; k < 5; k++) spawn(tip.x, tip.y, tip.z, rand(-1, 1), rand(.5, 2), rand(-1, 1), rand(.08, .24), .008, C.white, C.amber, 1.5, 4, F.TWINKLE, 0, .03, 0, groundY);
       floorGlow(p.x, p.z, [1, .55, .2], .12 + Math.random() * .1, .4, groundY);
@@ -769,7 +821,9 @@ function bomb(p, b) {
     if (b === BOMBS.atom) {
       atomSequence.burst();
       $('effectStatus').textContent = 'Let it ring…';
+      const aftertoneRun = atomRun;
       playAtomAftertone(actx, master, () => {
+        if (aftertoneRun !== atomRun) return;
         atomSequence.finish();
         $('effectStatus').hidden = true;
         // A hold started during the tail must not turn into a surprise launch.
@@ -784,7 +838,7 @@ function bomb(p, b) {
     scatterPaper(c.x, c.y, c.z, Math.ceil(46 * power), 2.6, 13, groundY);
     const scorch = contactShadow(p.x, p.z, .7 * R, .75, groundY);
     let st = 0;
-    emitters.push({ update(d) { st += d; if (st > 9) { scorch.material.opacity = .75 * (1 - (st - 9) / 3); if (st > 12) { scorch.material.dispose(); scorch.removeFromParent(); return false; } } return true; } });
+    addEmitter({ update(d) { st += d; if (st > 9) { scorch.material.opacity = .75 * (1 - (st - 9) / 3); if (st > 12) { scorch.material.dispose(); scorch.removeFromParent(); return false; } } return true; } });
     return false;
   } });
 }
@@ -792,7 +846,7 @@ function bomb(p, b) {
 // Counts accumulate per second so 30/60/120 Hz phones get the same fountain.
 function flowerPot(p) {
   const groundY = p.y, model = createCrackerModel('flower', TEX);
-  model.group.position.copy(p); world.add(model.group);
+  model.group.position.copy(p); effectSpace.add(model.group);
   const prop = { model, shadow: contactShadow(p.x, p.z, .13, .5, groundY) };
   const nozzle = p.clone(); nozzle.y += model.height + .006;
   const fuse = .85, burn = 9.5, cool = 4;
@@ -801,7 +855,7 @@ function flowerPot(p) {
   const fountain = { ground: true, flower: true, phase: 'fuse', update(dt) {
     t += dt;
     if (t < fuse) {
-      const tip = model.burn(t / fuse);
+      const tip = burnTip(model, t / fuse);
       for (let k = 0; k < 3; k++) spawn(tip.x, tip.y, tip.z, rand(-.3, .3), rand(.4, 1.1), rand(-.3, .3), .18, .006, C.gold, C.amber, 1.4, 5, 0, 0, .025, 0, groundY);
       floorGlow(p.x, p.z, C.amber, .13, .3, groundY);
       return true;
@@ -843,12 +897,12 @@ function flowerPot(p) {
     if (elapsed >= burn + cool) { dropProp(prop); return false; }
     return true;
   } };
-  emitters.push(fountain);
+  addEmitter(fountain);
 }
 
 function sanguchakram(p) {
   const groundY = p.y, model = createCrackerModel('spinner', TEX);
-  model.group.position.copy(p); world.add(model.group);
+  model.group.position.copy(p); effectSpace.add(model.group);
   const prop = { model, shadow: contactShadow(p.x, p.z, .11, .48, groundY) };
   const fuse = .75, burn = 7, cool = 3;
   let t = 0, angle = 0, carry = 0, smokeAt = 0, coreAt = 0, lit = false, serial = 0;
@@ -856,7 +910,7 @@ function sanguchakram(p) {
   const wheel = { ground: true, spinner: true, phase: 'fuse', update(dt) {
     t += dt;
     if (t < fuse) {
-      const tip = model.burn(t / fuse);
+      const tip = burnTip(model, t / fuse);
       for (let k = 0; k < 3; k++) spawn(tip.x, tip.y, tip.z, rand(-.4, .4), rand(.3, .8), rand(-.4, .4), .16, .006, C.gold, C.amber, 1, 5, 0, 0, .025, 0, groundY);
       return true;
     }
@@ -892,14 +946,14 @@ function sanguchakram(p) {
     if (elapsed >= burn + cool) { dropProp(prop); return false; }
     return true;
   } };
-  emitters.push(wheel);
+  addEmitter(wheel);
 }
 
 // The S-shaped garland and its burn front stay fixed in the world.
 const WALAS = WALA_CONFIGS;
 function wala(p, w) {
   const groundY = p.y, n = w.n, large = n === 10000;
-  const { points: pts, directions, cordPoints } = createWalaLayout(p, camera.quaternion, w);
+  const { points: pts, directions, cordPoints } = createWalaLayout(p, effectSpace === palmWorld ? new THREE.Quaternion() : camera.quaternion, w);
   const mat = new THREE.MeshStandardMaterial({ map: TEX.wala, roughness: .86, toneMapped: false });
   const cap = new THREE.MeshStandardMaterial({ color: 0xcba876, roughness: .96, toneMapped: false });
   const inst = new THREE.InstancedMesh(G.wala, [mat, cap, cap], n), dummy = new THREE.Object3D();
@@ -916,16 +970,16 @@ function wala(p, w) {
   }
   inst.instanceMatrix.needsUpdate = true;
   inst.frustumCulled = false;
-  world.add(inst);
+  effectSpace.add(inst);
   const cordGeo = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(cordPoints), cordPoints.length * 2, .0015 * w.scale, 5, false);
   const cordMat = new THREE.MeshStandardMaterial({ color: 0xb39565, roughness: .97, toneMapped: false });
-  const cord = new THREE.Mesh(cordGeo, cordMat); cord.name = `wala-fuse-${n}`; world.add(cord);
+  const cord = new THREE.Mesh(cordGeo, cordMat); cord.name = `wala-fuse-${n}`; effectSpace.add(cord);
   const cordCount = cordGeo.index.count;
   let t = 0, i = 0, cursor = .45, lastSound = -1, lastSmoke = -1;
   const times = pts.map(() => {
     const at = cursor; cursor += rand(w.gap[0], w.gap[1]); return at;
   });
-  emitters.push({ ground: true, largeWala: large, update(dt) {
+  addEmitter({ ground: true, largeWala: large, update(dt) {
     t += dt;
     const start = i;
     while (i < n && times[i] <= t) i++;
@@ -1015,10 +1069,11 @@ function hint(text, ms) {
 }
 const toldMode = {};
 function setMode(m) {
+  if (playing && handAnchor.ready) m = 'ground';
   if (m === mode) return;
   mode = m;
   updateModeLabel();
-  surfaceBtn.hidden = m !== 'ground';
+  surfaceBtn.hidden = handAnchor.ready || m !== 'ground';
   renderPicker();
   pickerEl.scrollLeft = 0;
   vibrate(10);
@@ -1033,7 +1088,10 @@ surfaceBtn.addEventListener('click', () => {
 
 function fireAt(cx, cy) {
   if (atomSequence.busy) return false;
-  if (worldTracking?.active && !worldTracking.ready) return false;
+  const onPalm = playing && handAnchor.ready;
+  if (!onPalm && worldTracking?.active && !worldTracking.ready) return false;
+  if (onPalm) setMode('ground');
+  if (onPalm && emitters.some(e => e.ground && e.space === palmWorld)) { hint('Let this palm cracker finish first.', 2000); return false; }
   const ray = rayAt(cx, cy), id = selected[mode === 'sky' && royalOpen ? 'royal' : mode];
   if (mode === 'sky') {
     placementGuide.place(); ring.visible = false; ring.material.opacity = 0;
@@ -1051,19 +1109,34 @@ function fireAt(cx, cy) {
   if (id === 'flower' && emitters.filter(e => e.flower).length >= 3) { hint('Let a flower pot finish before adding another.', 2000); return false; }
   if (id === 'spinner' && emitters.filter(e => e.spinner).length >= 3) { hint('Let a Sanguchakram finish before adding another.', 2000); return false; }
   if (id === 'wala10000' && emitters.some((e) => e.largeWala)) { hint('Let this 10,000 wala finish first.', 2000); return false; }
-  const spot = placementPoint(cx, cy);
+  const spot = onPalm ? new THREE.Vector3(0, 0, 0) : placementPoint(cx, cy);
   if (!spot) { hint("Move slowly and aim at a nearby surface.", 2500); return false; }
   placementGuide.place();
   ring.visible = false; ring.material.opacity = 0;
   if (id === 'atom') {
+    atomRun++; atomOnPalm = onPalm;
     atomSequence.begin();
     $('effectStatus').hidden = false;
     $('effectStatus').textContent = 'Atom bomb · fuse lit';
   }
-  if (BOMBS[id]) bomb(spot, BOMBS[id]);
-  else if (id === 'flower') flowerPot(spot);
-  else if (id === 'spinner') sanguchakram(spot);
-  else wala(spot, WALAS[id]);
+  if (onPalm) {
+    // Only retire palm residue. Room objects keep their original transforms.
+    for (let i = emitters.length - 1; i >= 0; i--) if (emitters[i].space === palmWorld) {
+      emitters[i].update(60); emitters.splice(i, 1);
+    }
+    for (let i = 0; i < N; i++) if (P.hand[i]) P.life[i] = 0;
+    for (let i = 0; i < M; i++) if (S.hand[i]) S.life[i] = 0;
+    for (let i = pulses.length - 1; i >= 0; i--) if (pulses[i].space === palmWorld) pulses.splice(i, 1);
+    palmWorld.scale.setScalar(handEffectScale(id, handAnchor.pose.width)); palmWorld.updateMatrixWorld(true);
+    handAnchor.lock();
+  }
+  withEffectSpace(onPalm ? palmWorld : world, () => {
+    if (onPalm) ensureAudio();
+    if (BOMBS[id]) bomb(spot, BOMBS[id]);
+    else if (id === 'flower') flowerPot(spot);
+    else if (id === 'spinner') sanguchakram(spot);
+    else wala(spot, WALAS[id]);
+  });
 }
 
 /* ---------- Motion and look ---------- */
@@ -1186,6 +1259,54 @@ async function startWorldCamera() {
   await worldTracking.start();
   trackingStarting = false;
 }
+
+function handState() {
+  if (handWasReady !== handAnchor.ready) {
+    handWasReady = handAnchor.ready;
+    placementGuide.select(); // Automatically arm the newly available surface.
+  }
+  syncAudioPlayback(); updateModeLabel();
+  if (atomOnPalm && atomSequence.busy) $('effectStatus').textContent = handAnchor.ready
+    ? (atomSequence.phase === 'fuse' ? 'Atom bomb · fuse lit' : 'Let it ring…') : 'Bring your palm back to continue';
+}
+function cancelPalmEffect() {
+  for (let i = emitters.length - 1; i >= 0; i--) if (emitters[i].space === palmWorld) emitters.splice(i, 1);
+  const geometries = new Set(), materials = new Set();
+  for (const child of [...palmWorld.children]) {
+    if (child === ring) continue;
+    child.traverse(object => {
+      if (object.geometry && object.geometry !== G.plane && object.geometry !== G.wala) geometries.add(object.geometry);
+      if (object.material) for (const material of Array.isArray(object.material) ? object.material : [object.material]) materials.add(material);
+      if (object.isInstancedMesh) object.dispose();
+    }); child.removeFromParent();
+  }
+  geometries.forEach(g => g.dispose()); materials.forEach(m => m.dispose());
+  for (let i = 0; i < N; i++) if (P.hand[i]) P.life[i] = 0;
+  for (let i = 0; i < M; i++) if (S.hand[i]) S.life[i] = 0;
+  for (let i = pulses.length - 1; i >= 0; i--) if (pulses[i].space === palmWorld) pulses.splice(i, 1);
+  if (atomOnPalm && atomSequence.busy) { atomRun++; atomSequence.finish(); $('effectStatus').hidden = true; press = null; }
+  handAudio?.actx?.close()?.catch(() => {}); handAudio = null;
+  handAnchor.unlock(); palmWorld.visible = false;
+}
+function startAutoHandTracking() {
+  handTracker?.stop();
+  handTracker = createHandTracking({ video,
+    onResult(result, time) {
+      handAnchor.update(palmPose(result, camera, W, H, video.videoWidth, video.videoHeight), time);
+      handState();
+    },
+    onLost() { handAnchor.invalidate(); handState(); },
+    onError() {
+      handAnchor.invalidate(); cancelPalmEffect(); handState();
+      hint('Palm tracking is unavailable. Floor and sky still work.', 4000);
+    },
+  });
+  // Background download/inference must never hold up the floor camera.
+  handTracker.start().catch(() => {
+    handAnchor.invalidate(); cancelPalmEffect(); handState();
+    hint('Palm tracking is unavailable here. Floor and sky still work.', 4000);
+  });
+}
 // Sparks are light, so they vanish against a bright view. Dim the feed to suit, like stopping a camera down.
 const lumC = document.createElement('canvas'); lumC.width = lumC.height = 16;
 const lumX = lumC.getContext('2d', { willReadFrequently: true });
@@ -1255,6 +1376,7 @@ function holdRepeat(dt) {
 }
 function applyMute() {
   if (master) master.gain.value = muted ? 0 : .9;
+  if (handAudio?.master) handAudio.master.gain.value = muted ? 0 : .9;
   $('icoSound').hidden = muted; $('icoMuted').hidden = !muted;
   $('muteBtn').setAttribute('aria-label', muted ? 'Turn sound on' : 'Mute sound');
 }
@@ -1265,6 +1387,7 @@ $('showBtn').addEventListener('click', () => toggleUi(false));
 // Silence the moment the page isn't on screen.
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) worldTracking?.pause(); else worldTracking?.resume();
+  if (document.hidden) handTracker?.pause(); else handTracker?.resume();
   syncAudioPlayback();
 });
 
@@ -1274,7 +1397,13 @@ async function requestMotionAccess() {
   try { return await DeviceOrientationEvent.requestPermission(); } catch { return 'denied'; }
 }
 function updateModeLabel() {
+  if (playing && handAnchor.ready) {
+    modeEl.textContent = 'Palm · Auto'; surfaceBtn.hidden = true; $('motionBtn').hidden = true;
+    $('trackingStatus').hidden = true; return;
+  }
+  surfaceBtn.hidden = mode !== 'ground';
   if (worldTracking?.active) {
+    $('trackingStatus').hidden = worldTracking.ready;
     modeEl.textContent = (mode === 'sky' ? 'Sky' : 'Floor') + (worldTracking.ready ? ' · AR' : ' · Scanning');
     $('motionBtn').hidden = true; return;
   }
@@ -1318,6 +1447,7 @@ async function beginExperience(useCamera = true) {
   renderPicker(); applyMute(); updateModeLabel();
   ensureAudio();
   try { if (navigator.wakeLock) await navigator.wakeLock.request('screen'); } catch {}
+  if (worldTracking?.active) startAutoHandTracking();
   hint(worldTracking?.active ? 'Aim at a well-lit patch of floor and move gently sideways. Tap when the ring appears.' : 'Demo: drag to look around, then tap to light a cracker.', 6000);
   if (wishName) queueSkyWish(1, `For ${wishName}`);
 }
@@ -1328,10 +1458,12 @@ $('motionBtn').addEventListener('click', async () => {
   hint(gyro ? 'Move your phone. Sky and floor switch automatically as motion arrives.' : 'Motion is blocked. Enable Motion & Orientation Access in Safari settings, then reload.', 6500);
 });
 modeEl.addEventListener('click', () => {
+  if (handAnchor.ready) { hint('Palm found. Tap to light a miniature cracker. Lower your hand to return to the floor.', 4000); return; }
   if (worldTracking?.active || (gyro && orient.ok)) { hint('Straight ahead or down: floor. Tilt upward for the sky.', 3500); return; }
   look.pitch = mode === 'sky' ? -.75 : .6;
 });
 addEventListener('pagehide', (event) => {
+  if (event.persisted) handTracker?.pause(); else handTracker?.stop();
   if (event.persisted) worldTracking?.pause();
   else {
     worldTracking?.stop();
@@ -1339,11 +1471,13 @@ addEventListener('pagehide', (event) => {
     if (feed && typeof feed.getTracks === 'function') feed.getTracks().forEach(track => track.stop());
   }
   if (actx) actx.suspend();
+  if (handAudio?.actx) handAudio.actx.suspend();
 });
 addEventListener('pageshow', (event) => {
   if (!event.persisted || document.hidden) return;
   press = null; fingers.clear(); last = performance.now();
   worldTracking?.resume();
+  handTracker?.resume();
   if (playing) ensureAudio();
 });
 addEventListener('keydown', e => {
@@ -1362,7 +1496,7 @@ let activeLettering = null;
 function queueSkyWish(delay = 0, title = 'Happy Diwali') {
   const view = VIEW();
   let elapsed = 0;
-  emitters.push({ update(dt) {
+  addEmitter({ update(dt) {
     elapsed += dt;
     if (elapsed < delay) return true;
     writeSky(title, view);
@@ -1406,7 +1540,7 @@ function writeSky(title = 'Happy Diwali', view = VIEW()) {
   let t = 0, dead = false, settled = false;
   const cancel = () => { if (dead) return; dead = true; lettering.removeFromParent(); geo.dispose(); mat.dispose(); texture.dispose(); if (activeLettering?.cancel === cancel) activeLettering = null; };
   activeLettering = { cancel };
-  emitters.push({ update(dt) {
+  addEmitter({ update(dt) {
     if (dead) return false;
     t += dt;
     if (!settled) {
@@ -1439,7 +1573,7 @@ function royalShow(kind) {
     plan.push({ at: i * .19, p, fn });
   }
   let elapsed = 0, n = 0, written = false;
-  emitters.push({ finale: true, update(dt) {
+  addEmitter({ finale: true, update(dt) {
     elapsed += dt;
     while (n < plan.length && plan[n].at <= elapsed) { const shot = plan[n++]; launch(shot.p, shot.fn, .65, false, view); }
     if (!written && elapsed > 6) { written = true; writeSky('Happy Diwali', view); }
@@ -1464,6 +1598,15 @@ const ring = new THREE.Mesh(new THREE.RingGeometry(.3, .307, 72).rotateX(-Math.P
 ring.frustumCulled = false; ring.renderOrder = 4;
 world.add(ring);
 function updateRing(time) {
+  if (playing && handAnchor.ready) {
+    if (ring.parent !== palmWorld) palmWorld.add(ring);
+    ring.visible = placementGuide.armed && !uiHidden && !atomSequence.busy && !emitters.some(e => e.ground && e.space === palmWorld);
+    ring.material.opacity = ring.visible ? .6 : 0;
+    ring.position.set(0, .005, 0);
+    ring.scale.setScalar(handAnchor.pose.width * .38 / (.3 * palmWorld.scale.x));
+    return;
+  }
+  if (ring.parent !== world) world.add(ring);
   const eligible = !atomSequence.busy && placementGuide.armed && playing && mode === 'ground' && !uiHidden && (!worldTracking?.active || worldTracking.ready);
   const spot = eligible ? placementPoint(W / 2, H / 2) : null;
   ring.visible = placementGuide.visible({ playing, ground: mode === 'ground', hidden: uiHidden,
@@ -1492,16 +1635,27 @@ function adaptQuality(rawDt, dt) {
 }
 function step(now) {
   const raw = Math.max(0, (now - last) / 1000);
-  const trackingLost = playing && worldTracking?.active && !worldTracking.ready;
-  const dt = trackingLost ? 0 : Math.min(.05, raw);
+  if (playing) {
+    handTracker?.tick(now); handAnchor.fresh(now);
+    if (!handAnchor.ready && now - handAnchor.lastSeen > 5000 &&
+        (emitters.some(e => e.space === palmWorld) || (atomOnPalm && atomSequence.busy))) cancelPalmEffect();
+    if (handWasReady !== handAnchor.ready) handState();
+    if (handAnchor.ready) {
+      // Landmarks describe the current camera image; compose with its room pose.
+      const target = handAnchor.pose.position.clone().applyMatrix4(camera.matrixWorld);
+      const rotation = camera.quaternion.clone().multiply(handAnchor.pose.quaternion);
+      const blend = palmWorld.visible ? 1 - Math.exp(-Math.min(raw, .05) * 25) : 1;
+      palmWorld.position.lerp(target, blend); palmWorld.quaternion.slerp(rotation, blend);
+      palmWorld.updateMatrixWorld(true);
+    }
+    if (!atomSequence.busy && !emitters.some(e => e.ground && e.space === palmWorld)) handAnchor.unlock();
+  }
+  const trackingLost = roomPaused();
+  const dt = Math.min(.05, raw);
   world.visible = !trackingLost;
+  palmWorld.visible = playing && handAnchor.ready;
   last = now;
   const time = now / 1000;
-  if (trackingLost) {
-    updateCamera(0); autoDim(Math.min(.05, raw));
-    renderer.render(scene, camera);
-    return;
-  }
   if (!playing) { look.yaw = Math.sin(time * .1) * .04; look.pitch = .14; attract(dt); }
   updateCamera(dt);
   poolN = 0;
@@ -1513,7 +1667,8 @@ function step(now) {
   for (let i = emitters.length - 1; i >= 0; i--) if (!emitters[i].update(dt)) emitters.splice(i, 1);
   for (let i = pulses.length - 1; i >= 0; i--) {
     const f = pulses[i];
-    floorGlow(f.x, f.z, f.c, f.i, f.r, f.groundY);
+    if (spacePaused(f.space || world)) continue;
+    withEffectSpace(f.space || world, () => floorGlow(f.x, f.z, f.c, f.i, f.r, f.groundY));
     f.i -= f.i * f.d * dt + dt * .3;
     if (f.i <= .02) pulses.splice(i, 1);
   }

@@ -72,6 +72,49 @@ event, including when audio has paused and resumed. A no-audio fallback keeps
 the same pacing. Holding during the tail does not queue another launch. Sound
 and camera processing pause when the page is backgrounded.
 
+## Automatic palm placement (beta)
+
+After Start camera, a background worker loads pinned MediaPipe Tasks Vision
+0.10.32 and the Hand Landmarker float16 version 1 model. It borrows the AR
+engine's existing video, with no second camera stream or permission prompt.
+The download does not block floor initialization. Camera frames are processed
+locally; only static SDK/WASM/model assets are fetched from jsDelivr and Google.
+
+Showing one open hand automatically selects the floor-cracker tray, labels the
+surface “Palm · Auto” and moves the ring onto the palm. Three consistent valid
+results are required. The ring disappears when tapped; the cracker is scaled to
+the palm and its body, shadow, sparks and paper use a separate palm coordinate
+system. Every floor cracker is supported, including the three S-shaped walas.
+Only one palm effect runs at a time; floor effects keep their original room
+coordinates. Removing the hand returns the placement target to the floor/sky
+angle logic. No Hand-mode selector or additional page is required.
+
+Hand-local landmarks estimate the palm plane, size and camera depth. The
+calibrated camera projection and visible cover crop map that estimate into the
+room. This is not a measured hand mesh, precise depth sensor or finger occlusion.
+Open fingers and a reasonably visible palm surface are required; side-on,
+folded, low-confidence, out-of-view or stale results cannot accept a placement.
+
+Brief tracking loss hides and pauses palm content and its separate audio bus,
+without pausing room content. After five seconds without a valid hand, the
+unfinished palm effect is cancelled and its resources freed, including any
+Atom lock. Cancellation invalidates an old ringing callback so it cannot unlock
+a later Atom sequence. Normal Atom completion still waits for the sound tail.
+The worker uses one frame in flight at a maximum 512-pixel input dimension,
+sampling less often while searching. Failure leaves the existing floor/sky AR
+working and displays an explanatory hint.
+
+Primary references:
+- https://developers.google.com/edge/mediapipe/solutions/vision/hand_landmarker
+- https://developers.google.com/edge/mediapipe/solutions/vision/hand_landmarker/web_js
+- https://developers.google.com/edge/mediapipe/solutions/setup_web
+
+Acceptance still requires physical Safari/Chrome: open palm acquire/loss,
+hand movement and rotation, simultaneous floor/palm effects, browser rotation,
+mute and ringing, background/resume, and sustained frame-rate/temperature.
+The automated tests use synthetic landmarks and mocked camera/worker plumbing;
+they do not establish inference accuracy, rendering quality or device performance.
+
 ## Validation
 
 Flower pot is a solid decorated cone with a 0.85-second fuse, a 9.5-second
@@ -107,7 +150,9 @@ events are batched per frame and only one 10,000 string can run at a time. The
   camera translation, reticle lifecycle, tracking loss/recovery, startup failure,
   audio completion gate, opaque model geometry and disposal, continuous S-shaped
   layout, all 10,000 instances and their lifecycle in the actual application.
-  All 31 checks pass, including level/upward mode selection, fountain/spinner lifecycle, fixed centers,
+  All 39 checks pass, including automatic palm selection, all eight palm effects,
+  independent room/palm movement and audio, tracking loss/cancellation, worker
+  readiness/camera ownership, level/upward mode selection, fixed centers,
   translated sky origins, settled paper/lettering, sound cleanup and recovery.
 - `node --check public/namma-vedis/app.js`
 - `npm run build`: Next.js export plus local AR runtime assets.
