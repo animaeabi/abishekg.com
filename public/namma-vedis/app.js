@@ -2,11 +2,13 @@
 
 import * as THREE from 'three';
 import { hasOrientation, deviceQuaternion, modeForPitch } from './orientation.mjs';
-import { snapshotView, groundIntersection, applyWorldPose, PlacementGuide } from './world-space.mjs';
+import { groundIntersection, PlacementGuide } from './world-space.mjs';
 import { waitForWorldEngine, createWorldTracking } from './world-tracking.mjs';
 import { AtomSequence, playAtomAftertone } from './atom-aftertone.mjs';
 import { createCrackerModel, addCrackerLights } from './cracker-models.mjs';
 import { WALA_CONFIGS, createWalaLayout } from './wala-layout.mjs';
+import { SkyTracking, skyView } from './sky-tracking.mjs';
+import { shellStar, shellFlight, skySound } from './sky-physics.mjs';
 import { createSkyWritingPlan, sampleStroke, skyWritingVertex, skyWritingFragment } from './sky-writing.mjs';
 import { createWalaBurn, walaIndexAt, renderWalaAudio, decorateWalaMaterial } from './wala-burn.mjs';
 import { HandAnchor, palmPose, handEffectScale } from './hand-anchor.mjs';
@@ -15,7 +17,7 @@ import { HandStabilizer } from './hand-stabilizer.mjs';
 import { createHandTracking } from './hand-tracking.mjs';
 const handAnchor = new HandAnchor();
 const handStabilizer = new HandStabilizer();
-let handTracker = null, handWasReady = false, handAudio = null;
+let handTracker = null, handWasReady = false, handAudio = null, skyAudio = null;
 let atomRun = 0, atomOnPalm = false, palmMotion = null;
 const atomSequence = new AtomSequence();
 let worldTracking = null, trackingStarting = false;
@@ -59,11 +61,15 @@ renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
 renderer.setClearColor(0x000000, 1);
 const scene = new THREE.Scene();
 const world = new THREE.Group(); scene.add(world);
+const skyWorld = new THREE.Group(); scene.add(skyWorld);
+const skyTracking = new SkyTracking();
 const palmWorld = new THREE.Group(); scene.add(palmWorld); palmWorld.visible = false;
 const handGuide = new THREE.Group(); scene.add(handGuide); handGuide.visible = false;
 let effectSpace = world;
 const roomPaused = () => Boolean(playing && worldTracking?.active && !worldTracking.ready);
-const spacePaused = space => roomPaused() || (space === palmWorld && !palmMotion);
+let skyMotionReady = false;
+const skyAvailable = () => !worldTracking?.active || worldTracking.ready || skyMotionReady;
+const spacePaused = space => space === skyWorld ? !skyAvailable() : roomPaused() || (space === palmWorld && !palmMotion);
 addCrackerLights(scene);
 const camera = new THREE.PerspectiveCamera(70, 1, 0.05, 900);
 scene.add(camera);
@@ -111,19 +117,24 @@ scene.add(backdrop);
 const skyLight = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.ShaderMaterial({
   ...ADD,
   depthTest: true,
-  uniforms: { ...shared, uC: { value: new THREE.Color(0, 0, 0) } },
+  uniforms: { ...shared, uC: { value: new THREE.Color(0, 0, 0) }, uCenter: { value: new THREE.Vector2(.5, .5) }, uLocal: { value: 0 } },
   vertexShader: 'void main(){ gl_Position = vec4(position.xy, 0.999999, 1.0); }',
-  fragmentShader: `${SAMPLE} uniform vec3 uC;
-    void main(){ vec3 c = uHas > .5 ? room() * uC * 1.5 : uC * .1; gl_FragColor = vec4(c, 0.0); }`,
+  fragmentShader: `${SAMPLE} uniform vec3 uC; uniform vec2 uCenter; uniform float uLocal;
+    void main(){ vec2 delta = gl_FragCoord.xy / uRes - uCenter; delta.x *= uRes.x / uRes.y;
+      float falloff = mix(1.0, exp(-dot(delta, delta) * 5.0), uLocal);
+      vec3 c = uHas > .5 ? room() * uC * 1.5 : uC * .1; gl_FragColor = vec4(c * falloff, 0.0); }`,
 }));
 skyLight.frustumCulled = false; skyLight.renderOrder = 0; skyLight.visible = false;
-world.add(skyLight);
+scene.add(skyLight);
 let sceneLight = 0;
-const sceneLightC = new THREE.Vector3();
-function lightScene(c, amt) {
+const sceneLightC = new THREE.Vector3(), sceneLightPoint = new THREE.Vector3(), projectedLight = new THREE.Vector3();
+let sceneLightSpace = world, sceneLightLocal = false;
+function lightScene(c, amt, point = null) {
   if (effectSpace === palmWorld || amt < sceneLight * .6) return;
   sceneLight = Math.max(sceneLight, amt);
   sceneLightC.set(c[0], c[1], c[2]);
+  sceneLightSpace = effectSpace; sceneLightLocal = Boolean(point);
+  if (point) sceneLightPoint.copy(point);
 }
 
 const FLOOR_GEO = new THREE.PlaneGeometry(2, 2).rotateX(-Math.PI / 2);
@@ -169,7 +180,7 @@ const N = 10000;
 const F = { TRAIL: 1, TWINKLE: 2, BOUNCE: 4, CRACKLE: 8, LATE: 16, SEG: 32 };
 const P = {};
 for (const k of ['x', 'y', 'z', 'vx', 'vy', 'vz', 'age', 'life', 'size', 'r', 'g', 'b', 'r2', 'g2', 'b2', 'drag', 'grav', 'tl', 'tt', 'str', 'glow', 'groundY']) P[k] = new Float32Array(N);
-P.flag = new Uint8Array(N); P.hand = new Uint8Array(N);
+P.flag = new Uint8Array(N); P.hand = new Uint8Array(N); P.sky = new Uint8Array(N);
 let head = 0, aliveCount = 0;
 const outPos = new Float32Array(N * 3), outVel = new Float32Array(N * 3), outCol = new Float32Array(N * 4), outSize = new Float32Array(N * 3);
 const QUAD = new Float32Array([-1, -1, 0, 1, -1, 0, 1, 1, 0, -1, 1, 0]), QUAD_I = [0, 1, 2, 0, 2, 3];
@@ -181,19 +192,19 @@ function instanced(...attrs) {
   g.instanceCount = 0;
   return g;
 }
-const outHand = new Float32Array(N);
-const sparkGeo = instanced(['iHand', outHand, 1], ['iPos', outPos, 3], ['iVel', outVel, 3], ['iCol', outCol, 4], ['iSize', outSize, 3]);
+const outHand = new Float32Array(N), outSky = new Float32Array(N);
+const sparkGeo = instanced(['iSky', outSky, 1], ['iHand', outHand, 1], ['iPos', outPos, 3], ['iVel', outVel, 3], ['iCol', outCol, 4], ['iSize', outSize, 3]);
 const sparkMat = new THREE.ShaderMaterial({
   ...ADD,
   depthTest: true,
-  uniforms: { uPalm: { value: palmWorld.matrixWorld }, uScale: { value: 1000 }, uMin: { value: 1.5 }, uRes: shared.uRes },
+  uniforms: { uSky: { value: skyWorld.matrixWorld }, uPalm: { value: palmWorld.matrixWorld }, uScale: { value: 1000 }, uMin: { value: 1.5 }, uRes: shared.uRes },
   vertexShader: `
-    attribute float iHand; uniform mat4 uPalm;
+    attribute float iSky; uniform mat4 uSky; attribute float iHand; uniform mat4 uPalm;
     attribute vec3 iPos; attribute vec3 iVel; attribute vec4 iCol; attribute vec3 iSize;
     uniform float uScale; uniform float uMin; uniform vec2 uRes;
     varying vec4 vC; varying vec2 vP; varying float vH; varying float vR; varying float vG;
     void main() {
-      mat4 space = iHand > .5 ? uPalm : mat4(1.0);
+      mat4 space = iSky > .5 ? uSky : (iHand > .5 ? uPalm : mat4(1.0));
       vec4 a = viewMatrix * space * vec4(iPos, 1.0);
       if (a.z > -0.04) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
       vec4 b = viewMatrix * space * vec4(iPos - iVel * iSize.y, 1.0);
@@ -230,7 +241,7 @@ scene.add(sparks);
 function spawn(x, y, z, vx, vy, vz, life, size, c1, c2, drag, grav, flag = 0, tl = 0, str = .033, glow = 0, groundY = floorY) {
   const i = head; head = (head + 1) % N;
   P.x[i] = x; P.y[i] = y; P.z[i] = z; P.vx[i] = vx; P.vy[i] = vy; P.vz[i] = vz;
-  P.hand[i] = effectSpace === palmWorld ? 1 : 0;
+  P.hand[i] = effectSpace === palmWorld ? 1 : 0; P.sky[i] = effectSpace === skyWorld ? 1 : 0;
   P.age[i] = 0; P.life[i] = life; P.size[i] = size;
   P.r[i] = c1[0]; P.g[i] = c1[1]; P.b[i] = c1[2]; P.r2[i] = c2[0]; P.g2[i] = c2[1]; P.b2[i] = c2[2];
   P.drag[i] = drag; P.grav[i] = grav; P.flag[i] = flag; P.tl[i] = tl; P.tt[i] = 0; P.str[i] = str; P.glow[i] = glow; P.groundY[i] = groundY;
@@ -244,7 +255,7 @@ function updateSparks(dt) {
   const trailGap = quality > .8 ? .03 : .05;
   for (let i = 0; i < N; i++) {
     if (P.life[i] <= 0) continue;
-    effectSpace = P.hand[i] ? palmWorld : world;
+    effectSpace = P.sky[i] ? skyWorld : P.hand[i] ? palmWorld : world;
     if (spacePaused(effectSpace)) continue;
     P.age[i] += dt;
     const fl = P.flag[i];
@@ -260,7 +271,8 @@ function updateSparks(dt) {
     if (fl & F.SEG) P.y[i] -= P.grav[i] * P.age[i] * dt; // a trail piece stays put and only sags; its velocity just sets its length
     else {
       const damp = Math.exp(-P.drag[i] * dt);
-      P.vx[i] *= damp; P.vy[i] = P.vy[i] * damp - P.grav[i] * dt; P.vz[i] *= damp;
+      P.vx[i] = P.vx[i] * damp + (P.sky[i] ? 1.3 * (1 - damp) : 0);
+      P.vy[i] = P.vy[i] * damp - P.grav[i] * dt; P.vz[i] = P.vz[i] * damp + (P.sky[i] ? .45 * (1 - damp) : 0);
       P.x[i] += P.vx[i] * dt; P.y[i] += P.vy[i] * dt; P.z[i] += P.vz[i] * dt;
     }
     if ((fl & F.BOUNCE) && P.y[i] < P.groundY[i]) { P.y[i] = P.groundY[i]; P.vy[i] *= -.32; P.vx[i] *= .55; P.vz[i] *= .55; }
@@ -276,7 +288,7 @@ function updateSparks(dt) {
         spawn(P.x[i], P.y[i], P.z[i], P.vx[i], P.vy[i], P.vz[i], P.tl[i] * rand(.7, 1.1), P.size[i] * .46, [r * .95, g * .72, b * .5], C.charcoal, 0, P.grav[i] * .16, F.SEG, 0, Math.max(trailGap, dt) * 1.25, -1);
       }
     }
-    outHand[n] = P.hand[i];
+    outHand[n] = P.hand[i]; outSky[n] = P.sky[i];
     outPos[n * 3] = P.x[i]; outPos[n * 3 + 1] = P.y[i]; outPos[n * 3 + 2] = P.z[i];
     outVel[n * 3] = P.vx[i]; outVel[n * 3 + 1] = P.vy[i]; outVel[n * 3 + 2] = P.vz[i];
     outCol[n * 4] = r; outCol[n * 4 + 1] = g; outCol[n * 4 + 2] = b; outCol[n * 4 + 3] = a;
@@ -286,18 +298,18 @@ function updateSparks(dt) {
   effectSpace = world;
   aliveCount = n;
   sparkGeo.instanceCount = n;
-  for (const name of ['iHand', 'iPos', 'iVel', 'iCol', 'iSize']) sparkGeo.attributes[name].needsUpdate = true;
+  for (const name of ['iSky', 'iHand', 'iPos', 'iVel', 'iCol', 'iSize']) sparkGeo.attributes[name].needsUpdate = true;
 }
 
 /* ---------- Smoke, and the paper a cracker leaves behind ---------- */
 const M = 1400;
 const S = {};
 for (const k of ['x', 'y', 'z', 'vx', 'vy', 'vz', 'age', 'life', 'size', 'grow', 'rot', 'spin', 'r', 'g', 'b', 'r2', 'g2', 'b2', 'a', 'drag', 'grav', 'wind', 'hard', 'groundY']) S[k] = new Float32Array(M);
-S.hand = new Uint8Array(M);
+S.hand = new Uint8Array(M); S.sky = new Uint8Array(M);
 let sHead = 0;
 const sPos = new Float32Array(M * 3), sCol = new Float32Array(M * 4), sSize = new Float32Array(M * 3);
-const sHand = new Float32Array(M);
-const smokeGeo = instanced(['iHand', sHand, 1], ['iPos', sPos, 3], ['iCol', sCol, 4], ['iSize', sSize, 3]);
+const sHand = new Float32Array(M), sSky = new Float32Array(M);
+const smokeGeo = instanced(['iSky', sSky, 1], ['iHand', sHand, 1], ['iPos', sPos, 3], ['iCol', sCol, 4], ['iSize', sSize, 3]);
 const smokeTex = (() => {
   const c = document.createElement('canvas'); c.width = c.height = 128;
   const x = c.getContext('2d');
@@ -310,18 +322,18 @@ const smokeTex = (() => {
   return new THREE.CanvasTexture(c);
 })();
 const smokeMat = new THREE.ShaderMaterial({
-  uniforms: { uTex: { value: smokeTex }, uPalm: { value: palmWorld.matrixWorld } },
+  uniforms: { uTex: { value: smokeTex }, uSky: { value: skyWorld.matrixWorld }, uPalm: { value: palmWorld.matrixWorld } },
   transparent: true, depthTest: true, depthWrite: false, toneMapped: false,
   blending: THREE.CustomBlending, blendEquation: THREE.AddEquation, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor, blendSrcAlpha: THREE.ZeroFactor, blendDstAlpha: THREE.OneFactor,
   vertexShader: `
-    attribute float iHand; uniform mat4 uPalm;
+    attribute float iSky; uniform mat4 uSky; attribute float iHand; uniform mat4 uPalm;
     attribute vec3 iPos; attribute vec4 iCol; attribute vec3 iSize;
     varying vec2 vUv; varying vec4 vC; varying float vHard;
     void main() {
       vUv = position.xy * 0.5 + 0.5; vC = iCol; vHard = iSize.z;
       float c = cos(iSize.y), s = sin(iSize.y);
       vec2 offset = vec2(position.x * c - position.y * s, position.x * s + position.y * c) * iSize.x;
-      mat4 space = iHand > .5 ? uPalm : mat4(1.0);
+      mat4 space = iSky > .5 ? uSky : (iHand > .5 ? uPalm : mat4(1.0));
       vec4 mv = viewMatrix * space * vec4(iPos, 1.0);
       // Landed paper lies on the original floor, rather than turning to face
       // the camera like airborne smoke. This keeps its shape fixed in AR.
@@ -345,7 +357,7 @@ smoke.frustumCulled = false; smoke.renderOrder = 2;
 scene.add(smoke);
 function puff(x, y, z, vx, vy, vz, life, size, grow, lit, base, alpha, drag, grav, wind, hard = 0, groundY = floorY) {
   const i = sHead; sHead = (sHead + 1) % M;
-  S.hand[i] = effectSpace === palmWorld ? 1 : 0;
+  S.hand[i] = effectSpace === palmWorld ? 1 : 0; S.sky[i] = effectSpace === skyWorld ? 1 : 0;
   S.x[i] = x; S.y[i] = y; S.z[i] = z; S.vx[i] = vx; S.vy[i] = vy; S.vz[i] = vz; S.age[i] = 0; S.life[i] = life; S.size[i] = size; S.grow[i] = grow;
   S.rot[i] = rand(0, TAU); S.spin[i] = rand(-.5, .5) * (hard ? 12 : 1);
   S.r[i] = lit[0]; S.g[i] = lit[1]; S.b[i] = lit[2]; S.r2[i] = base[0]; S.g2[i] = base[1]; S.b2[i] = base[2];
@@ -367,7 +379,7 @@ function particleToRoom(store, i) {
 function updateSmoke(dt) {
   let n = 0;
   for (let i = 0; i < M; i++) {
-    if (S.life[i] <= 0 || spacePaused(S.hand[i] ? palmWorld : world)) continue;
+    if (S.life[i] <= 0 || spacePaused(S.sky[i] ? skyWorld : S.hand[i] ? palmWorld : world)) continue;
     S.age[i] += dt;
     if (S.age[i] >= S.life[i]) { S.life[i] = 0; continue; }
     const damp = Math.exp(-S.drag[i] * dt);
@@ -383,7 +395,7 @@ function updateSmoke(dt) {
     }
     const k = S.age[i] / S.life[i], m = hard ? 0 : Math.min(1, k * 4);
     const lift = hard ? clamp(ambLum * 2.6, .28, 1.05) : 1;
-    sHand[n] = S.hand[i];
+    sHand[n] = S.hand[i]; sSky[n] = S.sky[i];
     sPos[n * 3] = S.x[i]; sPos[n * 3 + 1] = S.y[i]; sPos[n * 3 + 2] = S.z[i];
     sCol[n * 4] = (S.r[i] + (S.r2[i] - S.r[i]) * m) * lift; sCol[n * 4 + 1] = (S.g[i] + (S.g2[i] - S.g[i]) * m) * lift; sCol[n * 4 + 2] = (S.b[i] + (S.b2[i] - S.b[i]) * m) * lift;
     sCol[n * 4 + 3] = S.a[i] * (hard ? (k < .85 ? 1 : 1 - (k - .85) / .15) : Math.min(1, k * 7) * (1 - k));
@@ -392,7 +404,7 @@ function updateSmoke(dt) {
     n++;
   }
   smokeGeo.instanceCount = n;
-  for (const name of ['iHand', 'iPos', 'iCol', 'iSize']) smokeGeo.attributes[name].needsUpdate = true;
+  for (const name of ['iSky', 'iHand', 'iPos', 'iCol', 'iSize']) smokeGeo.attributes[name].needsUpdate = true;
 }
 
 /* ---------- Sound, all synthesized ---------- */
@@ -405,6 +417,7 @@ function syncAudioPlayback() {
   };
   sync(actx, spacePaused(effectSpace));
   if (handAudio?.actx !== actx) sync(handAudio?.actx, spacePaused(palmWorld));
+  if (skyAudio?.actx !== actx) sync(skyAudio?.actx, spacePaused(skyWorld));
 }
 function ensureAudio() {
   if (!actx) {
@@ -440,6 +453,7 @@ function ensureAudio() {
     verbIn = actx.createGain();
     verbIn.connect(verb); verb.connect(master);
   }
+  if (effectSpace === world && !skyAudio?.actx) withEffectSpace(skyWorld, ensureAudio);
   syncAudioPlayback(); // Resume an interrupted context on the next permitted tap/frame.
 }
 addEventListener('touchend', () => { if (playing) ensureAudio(); }, { passive: true });
@@ -488,18 +502,18 @@ const sfx = {
   fizz(dur, pan) { noise({ dur, vol: .22, f0: 5400, f1: 1900, type: 'bandpass', q: .8, pan, attack: .04, wet: .35 }); },
   // A shell bursting high up: a sharp crack, a heavy body, then the street answers. You hear it after you see it.
   burst(p, size = 1) {
-    const dist = p.distanceTo(camera.position), delay = clamp(dist / 340, .18, .55), pan = panFor(p);
-    noise({ dur: .05, vol: .7, f0: 3200, type: 'highpass', pan, wet: .9, delay });
-    noise({ dur: .75 * size, vol: .6, f0: 1500, f1: 95, pan, wet: 1.1, delay });
-    tone({ f0: 78, f1: 30, dur: .85 * size, vol: .75 * size, pan, wet: .5, delay });
+    const { delay, gain, cutoff } = skySound(skyDistance(p)), pan = panFor(p);
+    noise({ dur: .05, vol: .7 * gain, f0: cutoff, type: 'lowpass', pan, wet: .9, delay });
+    noise({ dur: .75 * size, vol: .6 * gain, f0: 1500, f1: 95, pan, wet: 1.1, delay });
+    tone({ f0: 78, f1: 30, dur: .85 * size, vol: .75 * size * gain, pan, wet: .5, delay });
     return delay;
   },
   // A rocket's payload is small: all crack and very little body.
   crack(p) {
-    const delay = clamp(p.distanceTo(camera.position) / 340, .18, .55), pan = panFor(p);
-    noise({ dur: .04, vol: .8, f0: 3800, type: 'highpass', pan, wet: .9, delay });
-    noise({ dur: .28, vol: .4, f0: 1800, f1: 240, pan, wet: .8, delay });
-    tone({ f0: 140, f1: 60, dur: .18, vol: .3, pan, wet: .3, delay });
+    const { delay, gain, cutoff } = skySound(skyDistance(p)), pan = panFor(p);
+    noise({ dur: .04, vol: .8 * gain, f0: cutoff, type: 'lowpass', pan, wet: .9, delay });
+    noise({ dur: .28, vol: .4 * gain, f0: 1800, f1: 240, pan, wet: .8, delay });
+    tone({ f0: 140, f1: 60, dur: .18, vol: .3 * gain, pan, wet: .3, delay });
   },
   crackle(n, pan, start, spread) {
     let t = start;
@@ -561,7 +575,7 @@ function placementPoint(cx, cy) {
   }
   return floorPoint(rayAt(cx, cy));
 }
-function panFor(p) { tmp.copy(p); if (effectSpace === palmWorld) palmWorld.localToWorld(tmp); tmp.applyMatrix4(camera.matrixWorldInverse); return clamp(tmp.x / Math.max(1, tmp.length()), -1, 1) * .85; }
+function panFor(p) { tmp.copy(p); if (effectSpace !== world) effectSpace.localToWorld(tmp); tmp.applyMatrix4(camera.matrixWorldInverse); return clamp(tmp.x / Math.max(1, tmp.length()), -1, 1) * .85; }
 function burnTip(model, progress, flame) {
   const tip = model.burn(progress, flame);
   return effectSpace === palmWorld ? palmWorld.worldToLocal(tip) : tip;
@@ -573,10 +587,11 @@ const emitters = [];
 function withEffectSpace(space, work) {
   const before = effectSpace, sound = { actx, master, noiseBuf, verbIn };
   effectSpace = space;
-  if (space === palmWorld) ({ actx = null, master = null, noiseBuf = null, verbIn = null } = handAudio || {});
+  if (space !== world) ({ actx = null, master = null, noiseBuf = null, verbIn = null } = (space === palmWorld ? handAudio : skyAudio) || {});
   try { return work(); }
   finally {
     if (space === palmWorld) handAudio = { actx, master, noiseBuf, verbIn };
+    if (space === skyWorld) skyAudio = { actx, master, noiseBuf, verbIn };
     ({ actx, master, noiseBuf, verbIn } = sound); effectSpace = before;
   }
 }
@@ -586,86 +601,87 @@ function addEmitter(emitter) {
   emitter.update = dt => spacePaused(space) ? true : withEffectSpace(space, () => update(dt));
   emitters.push(emitter);
 }
+const skyEffect = work => (...args) => withEffectSpace(skyWorld, () => work(...args));
 let shake = 0;
 const glowAt = (p, size, c, life) => spawn(p.x, p.y, p.z, 0, 0, 0, life, size, c, c, 0, 0, 0, 0, 0, 1);
-const SMOKE_BASE = [.14, .13, .135];
+const SMOKE_BASE = [.065, .07, .08];
 function shellSmoke(p, R, c, n = 16) {
   for (let i = 0; i < n * quality; i++) {
-    const d = randDir(), r = R * Math.pow(Math.random(), .5) * .7;
-    puff(p.x + d[0] * r, p.y + d[1] * r, p.z + d[2] * r, d[0] * 3, d[1] * 3, d[2] * 3, rand(4.5, 7.5), R * rand(.26, .4), R * .06, [c[0] * .75, c[1] * .75, c[2] * .75], SMOKE_BASE, rand(.11, .2), .8, .05, 3.2);
+    const d = randDir(), r = R * Math.pow(Math.random(), .6) * .22;
+    puff(p.x + d[0] * r, p.y + d[1] * r, p.z + d[2] * r, d[0] * 3, d[1] * 3 + .4, d[2] * 3, rand(4.5, 7.5), R * rand(.12, .22), R * .075, [c[0] * .38, c[1] * .38, c[2] * .38], SMOKE_BASE, rand(.1, .18), .65, -.12, 1.8);
   }
 }
 function burstCommon(p, R, c1, silent, size = 1) {
   glowAt(p, R * 1.5, c1, .16);
   glowAt(p, R * .7, C.white, .09);
-  lightScene(c1, .13 * size);
+  lightScene(c1, .13 * size, p);
   shellSmoke(p, R, c1);
   return silent ? .3 : sfx.burst(p, size);
 }
 function shellStars(p, n, R, k, life, size, c1, c2, grav, flag, tl) {
-  // Stars are packed evenly inside a real shell, so the break is a clean sphere rather than random clumps.
-  const v = R * k, count = Math.floor(n * (quality > .8 ? 1 : .7)), phase = rand(0, TAU), ga = Math.PI * (3 - Math.sqrt(5));
+  const v = R * k, count = Math.floor(n * (quality > .8 ? 1 : .7)), phase = rand(0, TAU);
   for (let i = 0; i < count; i++) {
-    const y = 1 - (i + .5) / count * 2, r = Math.sqrt(1 - y * y), a = phase + i * ga, s = v * rand(.94, 1.02);
-    const dx = Math.cos(a) * r + rand(-.05, .05), dy = y + rand(-.05, .05), dz = Math.sin(a) * r + rand(-.05, .05);
-    spawn(p.x, p.y, p.z, dx * s, dy * s, dz * s, life * rand(.82, 1.08), size * rand(.8, 1.2), c1, c2, k, grav, flag, tl);
+    const star = shellStar(i, count, phase), speed = v * star.speed;
+    spawn(p.x, p.y, p.z, star.x * speed, star.y * speed, star.z * speed, life * star.life,
+      size * star.size, c1, c2, k * star.drag, grav, flag, tl);
   }
 }
-function peony(p, silent, scale = 1, origin = camera.position) {
+const peony = skyEffect(function (p, silent, scale = 1, origin = skyOrigin()) {
   noteSkyActivity(2.5);
   const [a, b] = pick(PAIRS), D = p.distanceTo(origin), R = D * rand(.25, .29) * scale;
   burstCommon(p, R, a, silent, scale);
   shellStars(p, 230 * scale, R, 2, 2.15, D * .0115, a, b, 9.8, F.LATE, 0);
   shellStars(p, 80 * scale, R * .45, 2.3, 1.5, D * .009, b, C.white, 9.8, F.LATE, 0);
-}
-function chrysanthemum(p, silent, scale = 1, origin = camera.position) {
+});
+const chrysanthemum = skyEffect(function (p, silent, scale = 1, origin = skyOrigin()) {
   noteSkyActivity(3.45);
   const [a, b] = pick(PAIRS), D = p.distanceTo(origin), R = D * rand(.28, .32) * scale;
   burstCommon(p, R, a, silent, 1.2 * scale);
   shellStars(p, 210 * scale, R, 1.9, 2.5, D * .0115, C.white, a, 9.8, F.TRAIL | F.LATE, .5);
   shellStars(p, 45, R * .3, 2.2, 1.3, D * .01, b, b, 6, F.TWINKLE | F.LATE, 0);
-}
-function goldenRain(p, silent, _scale = 1, origin = camera.position) {
+});
+const goldenRain = skyEffect(function (p, silent, _scale = 1, origin = skyOrigin()) {
   noteSkyActivity(6.1);
   const D = p.distanceTo(origin), R = D * rand(.24, .27);
   const delay = burstCommon(p, R, C.gold, silent, .85);
   shellStars(p, 175, R, 1.45, 4.3, D * .0095, C.gold, C.charcoal, 9.8, F.TRAIL | F.LATE, 1.15);
   if (!silent) sfx.sizzle(3.6, panFor(p), delay + .2);
-}
-function crackling(p, silent, _scale = 1, origin = camera.position) {
+});
+const crackling = skyEffect(function (p, silent, _scale = 1, origin = skyOrigin()) {
   noteSkyActivity(2.2);
   const D = p.distanceTo(origin), R = D * rand(.22, .26);
   const delay = burstCommon(p, R, C.silver, silent, .75);
   shellStars(p, 110, R, 2, 1.25, D * .009, C.gold, C.silver, 9.8, F.CRACKLE | F.LATE, 0);
   if (!silent) sfx.crackle(90, panFor(p), delay + 1, 1.05);
-}
+});
 // Every shell climbs to where you tapped before it breaks, so you see the tail and hear the tube first.
-function launch(target, burst, T = rand(.6, .78), silent = false, view = VIEW()) {
+const launch = skyEffect(function (target, burst, T = rand(1.25, 1.65), silent = false, view = VIEW()) {
   noteSkyActivity();
-  const start = view.origin.clone().lerp(target, .32); start.y = view.groundY ?? floorY;
+  const start = view.origin.clone().lerp(target, .78); start.y = view.groundY ?? floorY;
   const size = target.distanceTo(view.origin) * .004;
   const pos = new THREE.Vector3(), last = start.clone();
   if (!silent) sfx.lift(panFor(target));
-  let t = 0;
+  let t = 0, carry = 0;
   addEmitter({ sky: true, update(dt) {
     t += dt;
-    const k = Math.min(1, t / T), e = 1 - (1 - k) * (1 - k);
-    pos.lerpVectors(start, target, e);
-    for (let i = 0; i < 4; i++) {
-      const f = i / 4;
+    const k = Math.min(1, t / T);
+    shellFlight(start, target, t, T, pos);
+    carry += dt * 150; const count = Math.min(9, Math.floor(carry)); carry -= Math.floor(carry);
+    for (let i = 0; i < count; i++) {
+      const f = i / count;
       spawn(last.x + (pos.x - last.x) * f, last.y + (pos.y - last.y) * f, last.z + (pos.z - last.z) * f, rand(-1, 1), rand(-4, -1), rand(-1, 1), rand(.2, .45), size * rand(.6, 1.1), C.gold, C.charcoal, 1.5, 3, 0, 0, .06);
     }
     last.copy(pos);
     if (k >= 1) { burst(target.clone(), silent, 1, view.origin); return false; }
     return true;
   } });
-}
+});
 // A rocket is a small motor with a small payload: it burns out, coasts for a beat in the dark, then cracks open into a few heavy comets.
-function rocketBreak(p, origin = camera.position) {
+const rocketBreak = skyEffect(function (p, origin = skyOrigin()) {
   noteSkyActivity(3.85);
   const D = p.distanceTo(origin), R = D * rand(.17, .2), c = pick([C.gold, C.gold, C.red, C.green, C.silver]);
   glowAt(p, R * 1.1, C.white, .09);
-  lightScene(c, .08);
+  lightScene(c, .08, p);
   shellSmoke(p, R, c, 8);
   sfx.crack(p);
   for (let i = 0; i < 34; i++) {
@@ -676,14 +692,14 @@ function rocketBreak(p, origin = camera.position) {
     const d = randDir(), v = R * rand(1, 4);
     spawn(p.x, p.y, p.z, d[0] * v, d[1] * v, d[2] * v, rand(.25, .55), D * .0045, C.white, C.gold, 3.4, 9.8, F.TWINKLE);
   }
-}
-function rocket(target) {
+});
+const rocket = skyEffect(function (target) {
   noteSkyActivity();
   const { r, origin, groundY } = VIEW();
-  const start = origin.clone().lerp(target, .2); start.y = groundY;
+  const start = origin.clone().lerp(target, .65); start.y = groundY;
   const pos = new THREE.Vector3(), last = start.clone();
   const bow = target.distanceTo(origin) * rand(.02, .045) * (Math.random() < .5 ? -1 : 1), wob = rand(0, TAU);
-  const burn = rand(.95, 1.15), T = burn + rand(.32, .46), ember = [.8, .3, .06];
+  const burn = rand(1.15, 1.4), T = burn + rand(.4, .55), ember = [.8, .3, .06];
   sfx.fizz(burn + .2, panFor(target));
   let t = 0;
   addEmitter({ sky: true, update(dt) {
@@ -703,9 +719,11 @@ function rocket(target) {
     if (t >= T) { rocketBreak(target.clone(), origin); return false; }
     return true;
   } });
-}
-const VIEW = () => ({ ...snapshotView(THREE, camera), groundY: floorY });
-function twelveShot(target) {
+});
+const VIEW = () => skyView(camera, skyWorld, floorY);
+const skyOrigin = () => skyWorld.worldToLocal(camera.position.clone());
+const skyDistance = p => skyWorld.localToWorld(p.clone()).distanceTo(camera.position);
+const twelveShot = skyEffect(function (target) {
   noteSkyActivity();
   const view = VIEW(), { r, origin } = view, dist = target.distanceTo(origin);
   const dir = target.clone().sub(origin).normalize();
@@ -715,13 +733,13 @@ function twelveShot(target) {
     while (n < 12 && n * .24 <= t) {
       const off = ((n % 2 ? 1 : -1) * (6 - Math.abs(n - 6))) * .05 + rand(-.015, .015);
       const d = dir.clone().addScaledVector(r, off).normalize().multiplyScalar(dist * rand(.88, 1.08)).add(origin);
-      launch(d, (q, s, _scale, origin) => peony(q, s, .55, origin), rand(.42, .56), false, view);
+      launch(d, (q, s, _scale, origin) => peony(q, s, .55, origin), rand(.85, 1.1), false, view);
       n++;
     }
     return n < 12;
   } });
-}
-function finale() {
+});
+const finale = skyEffect(function () {
   noteSkyActivity();
   const view = VIEW(), { f, r, u, origin } = view;
   const plan = [];
@@ -733,12 +751,12 @@ function finale() {
     t += dt;
     while (n < plan.length && plan[n].at <= t) {
       const d = f.clone().addScaledVector(r, rand(-.34, .34)).addScaledVector(u, rand(-.28, .5)).normalize().multiplyScalar(rand(100, 140)).add(origin);
-      launch(d, plan[n++].fn, rand(.45, .7), false, view);
+      launch(d, plan[n++].fn, rand(1.05, 1.45), false, view);
     }
     return n < plan.length;
   } });
   queueSkyWish(0, 'Happy Diwali', view);
-}
+});
 
 /* ---------- Ground crackers, as objects ---------- */
 function paperTex(draw) {
@@ -1184,13 +1202,13 @@ surfaceBtn.addEventListener('click', () => {
 function fireAt(cx, cy) {
   if (atomSequence.busy) return false;
   const onPalm = playing && handAnchor.ready;
-  if (worldTracking?.active && !worldTracking.ready) return false;
   if (onPalm) setMode('ground');
+  if (worldTracking?.active && (mode === 'sky' ? !skyAvailable() : !worldTracking.ready)) return false;
   if (onPalm && emitters.some(e => e.ground && e.space === palmWorld)) { hint('Let this palm cracker finish first.', 2000); return false; }
   const ray = rayAt(cx, cy), id = selected[mode === 'sky' && royalOpen ? 'royal' : mode];
   if (mode === 'sky') {
     placementGuide.place(); ring.visible = false; ring.material.opacity = 0;
-    const p = ray.clone().multiplyScalar(rand(100, 135)).add(camera.position);
+    const p = skyWorld.worldToLocal(ray.clone().multiplyScalar(rand(100, 145)).add(camera.position));
     if (royalOpen) { royalShow(id); return; }
     if (id === 'rocket') rocket(p);
     else if (id === 'shot') launch(p, Math.random() < .5 ? peony : chrysanthemum);
@@ -1245,10 +1263,15 @@ function fireAt(cx, cy) {
 }
 
 /* ---------- Motion and look ---------- */
-const orient = { a: 0, b: 0, g: 0, ok: false };
+const orient = { a: 0, b: 0, g: 0, ok: false, time: -Infinity };
+let lastSkyAvailable = false;
+function motionState() {
+  return { granted: gyro, sensor: orient.ok ? deviceQuaternion(THREE, orient, scrAngle()) : null,
+    sampleTime: orient.time, now: performance.now(), hidden: document.hidden };
+}
 addEventListener('deviceorientation', (e) => {
-  if (!hasOrientation(e)) return;
-  orient.a = e.alpha ?? 0; orient.b = e.beta; orient.g = e.gamma; orient.ok = true;
+  if (!hasOrientation(e)) { orient.ok = false; return; }
+  orient.a = e.alpha ?? 0; orient.b = e.beta; orient.g = e.gamma; orient.ok = true; orient.time = performance.now();
   if (playing) updateModeLabel();
 }, true);
 const scrAngle = () => (screen.orientation && typeof screen.orientation.angle === 'number' ? screen.orientation.angle : window.orientation || 0);
@@ -1257,7 +1280,10 @@ const look = { yaw: 0, pitch: .12 };
 let gyro = false, primed = false;
 function updateCamera(dt) {
   if (worldTracking?.active) {
-    // Position and rotation are supplied together for the current camera frame.
+    // Keep the last trustworthy position; motion bridges only sky rotation.
+    skyMotionReady = !worldTracking.ready && Boolean(skyTracking.update(camera, motionState()));
+    const available = Boolean(skyAvailable());
+    if (available !== lastSkyAvailable) { lastSkyAvailable = available; syncAudioPlayback(); updateModeLabel(); }
   } else if (playing && gyro && orient.ok) {
     qT.copy(deviceQuaternion(THREE, orient, scrAngle()));
     if (!primed) { qC.copy(qT); primed = true; } else qC.slerp(qT, 1 - Math.exp(-dt * 26));
@@ -1312,8 +1338,9 @@ function attachTrackedFeed(feedVideo) {
   updateFov();
 }
 function trackingState(ready) {
+  skyMotionReady = !ready && Boolean(skyTracking.canBridge(motionState()));
   $('trackingStatus').hidden = ready || !worldTracking?.active;
-  $('trackingStatus').textContent = ready ? '' : 'Aim at the floor and move your phone gently side to side.';
+  $('trackingStatus').textContent = ready ? '' : 'Aim at a detailed patch of floor and move gently sideways.';
   if (!ready) { ring.visible = false; ring.material.opacity = 0; }
   syncAudioPlayback();
   updateModeLabel();
@@ -1342,7 +1369,8 @@ async function startWorldCamera() {
     },
     onVideo: attachTrackedFeed,
     onPose(reality) {
-      const valid = applyWorldPose(camera, reality);
+      const sensor = motionState();
+      const valid = skyTracking.accept(camera, reality, sensor.sampleTime >= skyTracking.motionEpoch ? sensor.sensor : null, skyWorld);
       if (valid) {
         if (reality.realityTexture && cameraFeedRenderer) {
           if (!trackedCameraTexture) { trackedCameraTexture = new THREE.Texture(); trackedCameraTexture.colorSpace = THREE.NoColorSpace; }
@@ -1359,7 +1387,7 @@ async function startWorldCamera() {
     },
     onFrame() { renderer.resetState(); step(performance.now()); },
     onState: trackingState,
-    onError() { trackingState(false); hint('Tracking paused. Keep the floor in view or reload to start a new session.', 6000); },
+    onError() { skyTracking.frameReady = false; trackingState(false); hint('Camera tracking paused. Move gently or reload to reconnect.', 6000); },
   });
   await worldTracking.start();
   trackingStarting = false;
@@ -1433,7 +1461,7 @@ function autoDim(dt) {
     let s = 0;
     for (let i = 0; i < d.length; i += 4) s += .3 * d[i] + .59 * d[i + 1] + .11 * d[i + 2];
     const lum = s / (d.length / 4) / 255;
-    gainTarget = clamp(.17 / Math.max(lum, .02), .2, .92);
+    gainTarget = mode === 'sky' ? clamp(.32 / Math.max(lum, .02), .45, .96) : clamp(.17 / Math.max(lum, .02), .2, .92);
     ambLum = lum * gainTarget;
   } catch (e) { /* frame not ready */ }
 }
@@ -1488,6 +1516,7 @@ function holdRepeat(dt) {
 function applyMute() {
   if (master) master.gain.value = muted ? 0 : .9;
   if (handAudio?.master) handAudio.master.gain.value = muted ? 0 : .9;
+  if (skyAudio?.master) skyAudio.master.gain.value = muted ? 0 : .9;
   $('icoSound').hidden = muted; $('icoMuted').hidden = !muted;
   $('muteBtn').setAttribute('aria-label', muted ? 'Turn sound on' : 'Mute sound');
 }
@@ -1497,6 +1526,7 @@ $('showBtn').addEventListener('click', () => toggleUi(false));
 
 // Silence the moment the page isn't on screen.
 document.addEventListener('visibilitychange', () => {
+  skyTracking.invalidateMotion(performance.now()); orient.ok = false; skyMotionReady = false;
   if (document.hidden) worldTracking?.pause(); else worldTracking?.resume();
   if (document.hidden) handTracker?.pause(); else handTracker?.resume();
   syncAudioPlayback();
@@ -1514,9 +1544,11 @@ function updateModeLabel() {
   }
   surfaceBtn.hidden = mode !== 'ground';
   if (worldTracking?.active) {
-    $('trackingStatus').hidden = worldTracking.ready;
-    modeEl.textContent = (mode === 'sky' ? 'Sky' : 'Floor') + (worldTracking.ready ? ' · AR' : ' · Scanning');
-    $('motionBtn').hidden = true; return;
+    const sky = mode === 'sky', ready = sky ? skyAvailable() : worldTracking.ready;
+    $('trackingStatus').hidden = ready;
+    $('trackingStatus').textContent = sky ? (gyro ? 'Move your phone gently to reconnect sky motion.' : 'Enable motion to use the sky while floor tracking starts.') : 'Aim at a detailed patch of floor and move gently sideways.';
+    modeEl.textContent = (sky ? 'Sky' : 'Floor') + (worldTracking.ready ? ' · AR' : sky ? (ready ? ' · Motion' : ' · Waiting') : ' · Scanning');
+    $('motionBtn').hidden = !sky || ready || gyro; return;
   }
   const auto = gyro && orient.ok;
   modeEl.textContent = (mode === 'sky' ? 'Sky' : 'Floor') + (auto ? ' · Auto' : gyro ? ' · Waiting for motion' : ' · Manual');
@@ -1559,7 +1591,7 @@ async function beginExperience(useCamera = true) {
   ensureAudio();
   try { if (navigator.wakeLock) await navigator.wakeLock.request('screen'); } catch {}
   if (worldTracking?.active) startAutoHandTracking();
-  hint(worldTracking?.active ? 'Aim at a well-lit patch of floor and move gently sideways. Tap when the ring appears.' : 'Demo: drag to look around, then tap to light a cracker.', 6000);
+  hint(worldTracking?.active ? 'Tilt up and tap for sky fireworks. Aim down at a detailed floor for ground crackers.' : 'Demo: drag to look around, then tap to light a cracker.', 6000);
   if (wishName) queueSkyWish(1, `For ${wishName}`);
 }
 $('startBtn').addEventListener('click', () => beginExperience(true));
@@ -1574,6 +1606,7 @@ modeEl.addEventListener('click', () => {
   look.pitch = mode === 'sky' ? -.75 : .6;
 });
 addEventListener('pagehide', (event) => {
+  skyTracking.invalidateMotion(performance.now()); orient.ok = false; skyMotionReady = false;
   if (event.persisted) handTracker?.pause(); else handTracker?.stop();
   if (event.persisted) worldTracking?.pause();
   else {
@@ -1583,9 +1616,11 @@ addEventListener('pagehide', (event) => {
   }
   if (actx) actx.suspend();
   if (handAudio?.actx) handAudio.actx.suspend();
+  if (skyAudio?.actx) skyAudio.actx.suspend();
 });
 addEventListener('pageshow', (event) => {
   if (!event.persisted || document.hidden) return;
+  skyTracking.invalidateMotion(performance.now()); orient.ok = false; skyMotionReady = false;
   press = null; fingers.clear(); last = performance.now();
   worldTracking?.resume();
   handTracker?.resume();
@@ -1621,7 +1656,7 @@ function noteSkyActivity(seconds = 0) {
   } };
   skyTail = tail; addEmitter(tail);
 }
-function queueSkyWish(delay = 0, title = 'Happy Diwali', view = VIEW()) {
+const queueSkyWish = skyEffect(function (delay = 0, title = 'Happy Diwali', view = VIEW()) {
   if (pendingSkyWish) pendingSkyWish.cancelled = true;
   if (activeLettering) activeLettering.cancel();
   let elapsed = 0;
@@ -1634,7 +1669,7 @@ function queueSkyWish(delay = 0, title = 'Happy Diwali', view = VIEW()) {
     return false;
   } };
   pendingSkyWish = queued; addEmitter(queued);
-}
+});
 // Keep personalized names, including non-Latin glyphs. Default letters have
 // actual pen strokes; unfamiliar glyphs use short, progressively lit scan lines.
 function rasterizeWishGlyph(character) {
@@ -1653,7 +1688,7 @@ function rasterizeWishGlyph(character) {
   }
   return strokes;
 }
-function writeSky(title = 'Happy Diwali', view = VIEW()) {
+const writeSky = skyEffect(function (title = 'Happy Diwali', view = VIEW()) {
   if (activeLettering) activeLettering.cancel();
   const plan = createSkyWritingPlan(title, view, rasterizeWishGlyph);
   const geo = new THREE.BufferGeometry();
@@ -1666,7 +1701,7 @@ function writeSky(title = 'Happy Diwali', view = VIEW()) {
     uSize: { value: plan.unit * .065 }, uMotion: { value: reduceMotion ? .25 : 1 },
   }, vertexShader: skyWritingVertex, fragmentShader: skyWritingFragment });
   const lettering = new THREE.Points(geo, mat);
-  lettering.name = 'sky-writing'; lettering.renderOrder = 9; lettering.frustumCulled = false; world.add(lettering);
+  lettering.name = 'sky-writing'; lettering.renderOrder = 9; lettering.frustumCulled = false; skyWorld.add(lettering);
   let t = 0, dead = false, trailBudget = 0;
   const pos = new THREE.Vector3();
   const cancel = () => {
@@ -1715,16 +1750,16 @@ function writeSky(title = 'Happy Diwali', view = VIEW()) {
     return true;
   } };
   addEmitter(emitter);
-}
-function diamondBurst(p, silent, _scale = 1, origin = camera.position) {
+});
+const diamondBurst = skyEffect(function (p, silent, _scale = 1, origin = skyOrigin()) {
   noteSkyActivity(4.4);
   const D = p.distanceTo(origin), R = D * .29;
   const delay = burstCommon(p, R, C.silver, silent, 1.2);
   shellStars(p, 260, R, 1.65, 3.2, D * .01, C.white, C.blue, 6, F.TRAIL | F.TWINKLE | F.LATE, .7);
   shellStars(p, 100, R * .48, 1.8, 2.5, D * .009, C.silver, C.violet, 8, F.TWINKLE, 0);
   if (!silent) sfx.sizzle(2.8, panFor(p), delay);
-}
-function royalShow(kind) {
+});
+const royalShow = skyEffect(function (kind) {
   if (emitters.some(e => e.finale)) { hint('Let this grand show finish its moment.', 2300); return; }
   const view = VIEW(), { f, r, u, origin } = view, plan = [], count = reduceMotion ? 16 : kind === 'hukum' ? 42 : 36;
   for (let i = 0; i < count; i++) {
@@ -1738,11 +1773,11 @@ function royalShow(kind) {
   let elapsed = 0, n = 0;
   addEmitter({ sky: true, finale: true, update(dt) {
     elapsed += dt;
-    while (n < plan.length && plan[n].at <= elapsed) { const shot = plan[n++]; launch(shot.p, shot.fn, .65, false, view); }
+    while (n < plan.length && plan[n].at <= elapsed) { const shot = plan[n++]; launch(shot.p, shot.fn, 1.25, false, view); }
     return n < plan.length;
   } });
   queueSkyWish(0, 'Happy Diwali', view);
-}
+});
 $('royalBtn').addEventListener('click', () => {
   royalOpen = !royalOpen;
   $('royalBtn').setAttribute('aria-pressed', String(royalOpen));
@@ -1750,7 +1785,8 @@ $('royalBtn').addEventListener('click', () => {
   renderPicker();
 });
 $('wishBtn').addEventListener('click', () => {
-  if (!playing || atomSequence.busy || (worldTracking?.active && !worldTracking.ready)) return;
+  if (!playing || atomSequence.busy || !skyAvailable()) return;
+  ensureAudio();
   placementGuide.place(); ring.visible = false; ring.material.opacity = 0;
   queueSkyWish();
 });
@@ -1838,6 +1874,7 @@ function step(now) {
   const time = now / 1000;
   if (!playing) { look.yaw = Math.sin(time * .1) * .04; look.pitch = .14; attract(dt); }
   updateCamera(dt);
+  skyWorld.visible = skyAvailable();
   poolN = 0;
   if (playing) {
     holdRepeat(dt); autoDim(dt); adaptQuality(raw, dt);
@@ -1856,8 +1893,15 @@ function step(now) {
   updateSparks(dt);
   updateSmoke(dt);
   updateRing(time);
-  if (sceneLight > .002) {
+  if (sceneLight > .002 && !spacePaused(sceneLightSpace)) {
     skyLight.visible = true;
+    skyLight.material.uniforms.uLocal.value = sceneLightLocal ? 1 : 0;
+    if (sceneLightLocal) {
+      projectedLight.copy(sceneLightPoint); sceneLightSpace.localToWorld(projectedLight);
+      if (projectedLight.clone().applyMatrix4(camera.matrixWorldInverse).z >= 0) skyLight.visible = false;
+      projectedLight.project(camera);
+      skyLight.material.uniforms.uCenter.value.set(projectedLight.x * .5 + .5, projectedLight.y * .5 + .5);
+    }
     skyLight.material.uniforms.uC.value.setRGB(sceneLightC.x * sceneLight, sceneLightC.y * sceneLight, sceneLightC.z * sceneLight);
     sceneLight *= Math.exp(-dt * 7);
   } else skyLight.visible = false;

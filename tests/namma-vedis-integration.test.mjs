@@ -46,8 +46,10 @@ test('actual app: placement, new ground effects, release regressions and mixed-e
   let source = await readFile(path, 'utf8');
   source = source.replace("import * as THREE from 'three';", 'const THREE = globalThis.__nammaTestThree;');
   source = source.replace(/from '(\.\/[^']+)'/g, (_, p) => `from '${new URL(p, path).href}'`);
-  source += `\nexport const qa = { camera, world, palmWorld, handGuide, handAnchor, ring, emitters, P, S, pulses, selected, atomSequence, placementGuide,
-    get motion() { return palmMotion; }, get lettering() { return activeLettering; }, get queuedWish() { return pendingSkyWish; }, cancelPalmEffect, syncAudioPlayback, sparkMat, smokeMat, outHand, sHand, handState,
+  source += `\nexport const qa = { camera, world, skyWorld, skyTracking, palmWorld, handGuide, handAnchor, ring, emitters, P, S, pulses, selected, atomSequence, placementGuide,
+    get motion() { return palmMotion; },
+    sensor(enabled, stale = false) { gyro = enabled; orient.ok = enabled; orient.a = 0; orient.b = 140; orient.g = 0; orient.time = performance.now() - (stale ? 1000 : 0); if (stale) skyTracking.invalidateMotion(performance.now() - 500); },
+    useSkyAudio(context) { skyAudio = context ? { actx: context, master: context.createGain() } : null; }, get lettering() { return activeLettering; }, get queuedWish() { return pendingSkyWish; }, cancelPalmEffect, syncAudioPlayback, sparkMat, smokeMat, outHand, sHand, handState,
     fireAt, setMode, updateCamera, updateRing, step, queueSkyWish, writeSky, scatterPaper, updateSmoke, sSize, smokeGeo, trackingState,
     flowerPot, sanguchakram, wala, WALAS, royalShow, finale, rocket, twelveShot, peony, chrysanthemum, goldenRain, crackling, diamondBurst, launch, tone, noise,
     init() { playing = true; floorY = 0; worldTracking = { active: true, ready: true, hit: () => null }; },
@@ -59,7 +61,7 @@ test('actual app: placement, new ground effects, release regressions and mixed-e
     clearParticles() { P.life.fill(0); S.life.fill(0); head = 0; sHead = 0; },
     simulate(seconds, hz = 60) { for (let j = 0; j < Math.ceil(seconds * hz); j++) step(last + 1000 / hz); },
     simulateHand(seconds, hz = 60) { for (let j = 0; j < Math.ceil(seconds * hz); j++) { handAnchor.lastSeen = last + 1000 / hz; step(last + 1000 / hz); } },
-    stats() { return { sparks: sparkGeo.instanceCount, smoke: smokeGeo.instanceCount, emitters: emitters.length, objects: world.children.length }; },
+    stats() { return { sparks: sparkGeo.instanceCount, smoke: smokeGeo.instanceCount, emitters: emitters.length, objects: world.children.length + skyWorld.children.length }; },
     tick(dt) { for (let i = emitters.length - 1; i >= 0; i--) if (!emitters[i].update(dt)) emitters.splice(i, 1); },
   };`;
   const { qa } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
@@ -109,7 +111,7 @@ test('actual app: placement, new ground effects, release regressions and mixed-e
   qa.setMode('sky'); qa.camera.rotation.set(0, 0, 0); qa.camera.position.set(2, 1.4, -1); qa.camera.updateMatrixWorld();
   qa.queueSkyWish(1); qa.camera.position.set(20, 1.4, 10); qa.camera.rotation.y = Math.PI; qa.camera.updateMatrixWorld();
   qa.tick(1.1);
-  const text = qa.world.children.find(o => o.isPoints);
+  const text = qa.skyWorld.children.find(o => o.isPoints);
   assert.ok(text); assert.ok(text.geometry.attributes.position.array[2] < -90, 'lettering remains in the original sky direction');
 
   // The large S-shaped string is an actual 10,000-instance anchored object.
@@ -191,7 +193,7 @@ test('actual app: placement, new ground effects, release regressions and mixed-e
     for (let i = 0; i < 4; i++) assert.equal(qa.sSize[i * 3 + 2], 2);
     const positions = qa.S.x.slice(0, 4); qa.camera.rotation.y += 1; qa.camera.updateMatrixWorld(); qa.updateSmoke(.1);
     assert.deepEqual(qa.S.x.slice(0, 4), positions);
-    qa.writeSky(); qa.tick(1.3); const letters = qa.world.children.find(o => o.isPoints);
+    qa.writeSky(); qa.tick(1.3); const letters = qa.skyWorld.children.find(o => o.isPoints);
     const version = letters.geometry.attributes.position.version, fixed = letters.geometry.attributes.position.array.slice();
     const clock = letters.material.uniforms.uTime.value;
     qa.tick(.4); assert.ok(letters.material.uniforms.uTime.value > clock);
@@ -205,7 +207,7 @@ test('actual app: placement, new ground effects, release regressions and mixed-e
       let firstWriting = null;
       for (let frame = 0; frame < 30 * 60; frame++) {
         qa.simulate(1 / 60);
-        const lettering = qa.world.getObjectByName('sky-writing');
+        const lettering = qa.skyWorld.getObjectByName('sky-writing');
         if (qa.emitters.some(e => e.sky)) assert.equal(lettering, undefined, 'no wording while a shell is climbing or its stars remain');
         if (lettering && firstWriting === null) firstWriting = frame / 60;
       }
@@ -224,7 +226,7 @@ test('actual app: placement, new ground effects, release regressions and mixed-e
     assert.equal(qa.lettering, null);
     assert.equal(qa.emitters.filter(e => e.skyWish && !e.cancelled).length, 1);
     qa.simulate(1.8); assert.ok(qa.lettering);
-    const old = qa.world.getObjectByName('sky-writing'), originalView = qa.lettering.view;
+    const old = qa.skyWorld.getObjectByName('sky-writing'), originalView = qa.lettering.view;
     let disposed = 0; old.geometry.addEventListener('dispose', () => disposed++); old.material.addEventListener('dispose', () => disposed++);
     qa.rocket(target);
     assert.equal(qa.lettering, null); assert.equal(old.parent, null); assert.equal(disposed, 2);
@@ -236,7 +238,7 @@ test('actual app: placement, new ground effects, release regressions and mixed-e
 
   await t.test('sparks trace letters progressively, pause with tracking, dissipate and release GPU resources', () => {
     qa.init(); qa.clearParticles(); qa.queueSkyWish(); qa.simulate(1 / 60);
-    const object = qa.world.getObjectByName('sky-writing'), { plan } = qa.lettering;
+    const object = qa.skyWorld.getObjectByName('sky-writing'), { plan } = qa.lettering;
     const births = object.geometry.attributes.aBirth.array;
     let disposed = 0; object.geometry.addEventListener('dispose', () => disposed++); object.material.addEventListener('dispose', () => disposed++);
     qa.simulate(.7);
@@ -425,4 +427,34 @@ test('actual app: placement, new ground effects, release regressions and mixed-e
     assert.ok(qa.S.groundY.every((v, i) => qa.S.life[i] <= 0 || v === 0), 'debris falls to the room floor');
     t.mock.timers.tick(2700); qa.cancelPalmEffect(); qa.handAnchor.invalidate(); qa.handState();
   });
+  await t.test('sky launches during floor scanning, while ground objects and ground audio remain paused', () => {
+    qa.init(); qa.clearParticles(); qa.camera.rotation.set(0, 0, 0); qa.camera.updateMatrixWorld();
+    qa.flowerPot(new RealThree.Vector3(0, 0, -2)); qa.simulate(1.5);
+    const particle = [...qa.P.life].findIndex((life, i) => life > 0 && !qa.P.sky[i]);
+    assert.ok(particle >= 0); const frozenAge = qa.P.age[particle];
+    const tracker = { active: true, ready: false, hit: () => null }; qa.setTracker(tracker);
+    qa.skyTracking.accept(qa.camera, { position: { x: 0, y: 1.4, z: 0 }, rotation: new RealThree.Quaternion(),
+      intrinsics: qa.camera.projectionMatrix.toArray(), trackingStatus: 'LIMITED' }, null, qa.skyWorld);
+    qa.sensor(true); qa.updateCamera(1 / 60); qa.trackingState(false);
+    assert.equal(elements.get('mode').textContent, 'Sky · Motion');
+    assert.equal(elements.get('trackingStatus').hidden, true);
+    qa.selected.sky = 'shot'; qa.fireAt(195, 200);
+    assert.ok(qa.emitters.some(e => e.sky && e.space === qa.skyWorld));
+    qa.setMode('ground'); assert.equal(qa.fireAt(195, 422), false, 'motion never bypasses the floor lock');
+    qa.simulate(2.4);
+    assert.equal(qa.world.visible, false); assert.equal(qa.skyWorld.visible, true);
+    assert.equal(qa.P.age[particle], frozenAge, 'ground particle clocks stay paused');
+    assert.ok([...qa.P.life].some((life, i) => life > 0 && qa.P.sky[i]));
+    assert.ok([...qa.S.life].some((life, i) => life > 0 && qa.S.sky[i]));
+    const context = () => ({ state: 'running', createGain: () => ({}),
+      suspend() { this.state = 'suspended'; return Promise.resolve(); }, resume() { this.state = 'running'; return Promise.resolve(); } });
+    const groundSound = context(), skySound = context(); qa.useAudio(groundSound); qa.useSkyAudio(skySound); qa.syncAudioPlayback();
+    assert.equal(groundSound.state, 'suspended'); assert.equal(skySound.state, 'running');
+    qa.sensor(true, true); qa.updateCamera(1 / 60);
+    assert.equal(skySound.state, 'suspended', 'motion from before a background/resume stops sky audio together with its visuals');
+    assert.equal(qa.fireAt(195, 200), false);
+    qa.sensor(false); qa.updateCamera(1 / 60); assert.equal(qa.fireAt(195, 200), false);
+    qa.useAudio(null); qa.useSkyAudio(null); tracker.ready = true; qa.trackingState(true); qa.simulate(20);
+  });
+
 });
