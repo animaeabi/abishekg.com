@@ -5,7 +5,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import * as RealThree from 'three';
 
-test('actual app hides the ring, fixes debris height, and gates every launch until Atom audio finishes', async (t) => {
+test('actual app: placement, new ground effects, release regressions and mixed-effect stress', async (t) => {
   t.mock.timers.enable({ apis: ['setTimeout'] });
   const noop = () => {};
   const context = new Proxy({
@@ -19,7 +19,8 @@ test('actual app hides the ring, fixes debris height, and gates every launch unt
       appendChild(child) { this.children.push(child); }, closest: () => null,
     };
   }
-  const elements = new Map();
+  const elements = new Map(), events = new Map();
+  const onEvent = (name, callback) => { if (!events.has(name)) events.set(name, []); events.get(name).push(callback); };
   const doc = { getElementById(id) { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); },
     createElement: element, addEventListener: noop };
   const properties = new WeakMap();
@@ -30,7 +31,7 @@ test('actual app hides the ring, fixes debris height, and gates every launch unt
   }
   const globals = { __nammaTestThree: { ...RealThree, WebGLRenderer: Renderer }, document: doc,
     window: { isSecureContext: true }, navigator: {}, location: { search: '' }, screen: {},
-    matchMedia: () => ({ matches: false }), addEventListener: noop, requestAnimationFrame: noop, devicePixelRatio: 1 };
+    matchMedia: () => ({ matches: false }), addEventListener: onEvent, requestAnimationFrame: noop, devicePixelRatio: 1 };
   const previous = new Map();
   for (const [key, value] of Object.entries(globals)) {
     previous.set(key, Object.getOwnPropertyDescriptor(globalThis, key));
@@ -46,9 +47,15 @@ test('actual app hides the ring, fixes debris height, and gates every launch unt
   source = source.replace("import * as THREE from 'three';", 'const THREE = globalThis.__nammaTestThree;');
   source = source.replace(/from '(\.\/[^']+)'/g, (_, p) => `from '${new URL(p, path).href}'`);
   source += `\nexport const qa = { camera, world, ring, emitters, P, S, pulses, selected, atomSequence, placementGuide,
-    fireAt, setMode, updateRing, step, queueSkyWish,
+    fireAt, setMode, updateRing, step, queueSkyWish, writeSky, scatterPaper, updateSmoke, sSize, smokeGeo, trackingState,
+    flowerPot, sanguchakram, wala, WALAS, royalShow, peony, chrysanthemum, goldenRain, crackling, diamondBurst, launch, tone, noise,
     init() { playing = true; floorY = 0; worldTracking = { active: true, ready: true, hit: () => null }; },
     setFloor(y) { floorY = y; },
+    setTracker(tracker) { worldTracking = tracker; },
+    useAudio(context) { actx = context; master = context?.createGain(); verbIn = context?.createGain(); noiseBuf = {}; },
+    clearParticles() { P.life.fill(0); S.life.fill(0); head = 0; sHead = 0; },
+    simulate(seconds, hz = 60) { for (let j = 0; j < Math.ceil(seconds * hz); j++) step(last + 1000 / hz); },
+    stats() { return { sparks: sparkGeo.instanceCount, smoke: smokeGeo.instanceCount, emitters: emitters.length, objects: world.children.length }; },
     tick(dt) { for (let i = emitters.length - 1; i >= 0; i--) if (!emitters[i].update(dt)) emitters.splice(i, 1); },
   };`;
   const { qa } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
@@ -102,4 +109,114 @@ test('actual app hides the ring, fixes debris height, and gates every launch unt
   assert.equal(qa.world.getObjectByName('wala-10000'), undefined);
   assert.equal(qa.world.getObjectByName('wala-fuse-10000'), undefined);
   assert.equal(qa.emitters.some(e => e.largeWala), false, 'completed string frees the next 10,000 launch');
+  qa.simulate(45);
+
+  await t.test('flower pot builds a sustained fountain, stays anchored and cleans up', () => {
+    qa.init(); qa.setMode('ground'); qa.camera.position.set(0, 1.4, 0); qa.camera.rotation.set(-.7, 0, 0); qa.camera.updateMatrixWorld();
+    qa.selected.ground = 'flower'; qa.fireAt(195, 422);
+    const pot = qa.world.getObjectByName('cracker-flower'), emitter = qa.emitters.find(e => e.flower);
+    assert.ok(pot && emitter); assert.equal(emitter.phase, 'fuse'); assert.equal(qa.ring.visible, false);
+    const original = pot.position.clone(); qa.simulate(1.6);
+    assert.equal(emitter.phase, 'fountain');
+    assert.ok([...qa.P.vy].some((v, i) => qa.P.life[i] > 0 && v > 3), 'upward fountain jets');
+    qa.camera.position.set(2, 1.4, -1); qa.camera.rotation.y = .8; qa.camera.updateMatrixWorld(); qa.setFloor(.8);
+    qa.simulate(4); assert.deepEqual(pot.position.toArray(), original.toArray());
+    assert.equal(emitter.phase, 'fountain', 'a sustained fountain, not a bomb that disappears');
+    for (let i = 0; i < qa.P.life.length; i++) if (qa.P.life[i] > 0 && (qa.P.flag[i] & 4)) assert.equal(qa.P.groundY[i], 0);
+    qa.simulate(5.2); assert.equal(emitter.phase, 'cooling'); assert.equal(pot.getObjectByName('burning-fuse-tip').visible, false);
+    qa.simulate(4); assert.equal(qa.world.getObjectByName('cracker-flower'), undefined); assert.equal(qa.emitters.some(e => e.flower), false);
+    qa.setFloor(0);
+  });
+
+  await t.test('Sanguchakram rotates around its fixed center and emits low circular sparks', () => {
+    qa.clearParticles(); const point = new RealThree.Vector3(1, 0, -2); qa.sanguchakram(point);
+    const disc = qa.world.getObjectByName('cracker-spinner'), emitter = qa.emitters.find(e => e.spinner);
+    qa.simulate(1.5); assert.equal(emitter.phase, 'spinning');
+    const angle = disc.rotation.y; qa.camera.position.x += 2; qa.camera.updateMatrixWorld(); qa.simulate(.4);
+    assert.notEqual(disc.rotation.y, angle); assert.deepEqual(disc.position.toArray(), point.toArray());
+    const live = [...qa.P.life].map((life, i) => life > 0 && (qa.P.flag[i] & 4) ? i : -1).filter(i => i >= 0);
+    assert.ok(live.length > 60); assert.ok(live.every(i => qa.P.y[i] < .2), 'spinner stays close to the floor');
+    assert.ok(live.some(i => qa.P.x[i] < point.x) && live.some(i => qa.P.x[i] > point.x));
+    assert.ok(live.some(i => qa.P.z[i] < point.z) && live.some(i => qa.P.z[i] > point.z));
+    qa.simulate(6.2); assert.equal(emitter.phase, 'cooling'); const stoppedAngle = disc.rotation.y;
+    qa.simulate(.5); assert.equal(disc.rotation.y, stoppedAngle);
+    qa.simulate(3); assert.equal(qa.world.getObjectByName('cracker-spinner'), undefined);
+  });
+
+  await t.test('sky burst size is invariant to world-origin translation and captures launch origin', () => {
+    const random = Math.random; Math.random = () => .5;
+    try {
+      for (const burst of [qa.peony, qa.chrysanthemum, qa.goldenRain, qa.crackling, qa.diamondBurst]) {
+        qa.clearParticles(); burst(new RealThree.Vector3(0, 35, -100), true, 1, new RealThree.Vector3(0, 1.4, 0));
+        const sizes = qa.P.size.slice(), velocities = qa.P.vx.slice();
+        qa.clearParticles(); burst(new RealThree.Vector3(180, 35, -40), true, 1, new RealThree.Vector3(180, 1.4, 60));
+        assert.deepEqual(qa.P.size, sizes); assert.deepEqual(qa.P.vx, velocities);
+      }
+      qa.camera.position.set(2, 1.4, 3); qa.camera.updateMatrixWorld(); let received;
+      qa.launch(new RealThree.Vector3(2, 35, -100), (_p, _s, _scale, origin) => { received = origin; }, .5, true);
+      qa.camera.position.set(50, 1.4, 50); qa.tick(.6); assert.deepEqual(received.toArray(), [2, 1.4, 3]);
+    } finally { Math.random = random; }
+  });
+
+  await t.test('settled paper lies flat and settled lettering stops uploading vertices', () => {
+    qa.clearParticles(); qa.scatterPaper(1, .1, -2, 4, .1, 10, 0); qa.updateSmoke(1);
+    assert.equal(qa.smokeGeo.instanceCount, 4);
+    for (let i = 0; i < 4; i++) assert.equal(qa.sSize[i * 3 + 2], 2);
+    const positions = qa.S.x.slice(0, 4); qa.camera.rotation.y += 1; qa.camera.updateMatrixWorld(); qa.updateSmoke(.1);
+    assert.deepEqual(qa.S.x.slice(0, 4), positions);
+    qa.writeSky(); qa.tick(1.3); const letters = qa.world.children.find(o => o.isPoints);
+    const version = letters.geometry.attributes.position.version, fixed = letters.geometry.attributes.position.array.slice();
+    qa.tick(.4); assert.equal(letters.geometry.attributes.position.version, version); assert.deepEqual(letters.geometry.attributes.position.array, fixed);
+    qa.simulate(15);
+  });
+
+  await t.test('three fountains, three spinners, 10,000 wala and a grand show remain bounded', () => {
+    qa.init(); qa.clearParticles(); qa.camera.position.set(0, 1.4, 0); qa.camera.rotation.set(-.7, 0, 0); qa.camera.updateMatrixWorld(); qa.setMode('ground');
+    for (const id of ['flower', 'spinner']) {
+      qa.selected.ground = id;
+      for (let i = 0; i < 3; i++) qa.fireAt(180 + i * 10, 422);
+      assert.equal(qa.fireAt(195, 422), false, 'fourth continuous effect is capped');
+    }
+    qa.selected.ground = 'wala10000'; qa.fireAt(195, 422); qa.royalShow('hukum');
+    const peak = { sparks: 0, smoke: 0, emitters: 0, objects: 0 };
+    for (let i = 0; i < 45 * 60; i++) {
+      qa.simulate(1 / 60); const stats = qa.stats();
+      for (const key of Object.keys(peak)) peak[key] = Math.max(peak[key], stats[key]);
+    }
+    assert.ok(peak.sparks <= 10000 && peak.smoke <= 1400 && peak.objects < 45 && peak.emitters < 40);
+    assert.ok(qa.P.x.every(Number.isFinite) && qa.S.y.every(Number.isFinite));
+    assert.equal(qa.emitters.length, 0); assert.equal(qa.world.children.some(o => o.name.startsWith('cracker-') || o.name.startsWith('wala-')), false);
+    t.diagnostic('CPU mixed-effect peak (not device FPS): ' + JSON.stringify(peak));
+  });
+
+  await t.test('finished sounds disconnect every per-sound audio node', () => {
+    const nodes = [], param = () => ({ value: 0, setValueAtTime: noop, exponentialRampToValueAtTime: noop });
+    const node = (type) => { const value = { type, gain: param(), frequency: param(), Q: param(), pan: param(), connects: [], disconnected: 0,
+      connect(target) { this.connects.push(target); }, disconnect() { this.disconnected++; this.connects = []; }, start: noop, stop: noop }; nodes.push(value); return value; };
+    const context = { currentTime: 0, state: 'running', createGain: () => node('gain'), createStereoPanner: () => node('panner'),
+      createOscillator: () => node('oscillator'), createBufferSource: () => node('source'), createBiquadFilter: () => node('filter') };
+    qa.useAudio(context); const persistent = nodes.length;
+    qa.tone({ f0: 300, dur: .2, vol: .1, wet: .2 }); qa.noise({ f0: 2000, dur: .2, vol: .1, wet: .2 });
+    for (const n of nodes) if (n.onended) n.onended();
+    assert.ok(nodes.slice(persistent).every(n => n.disconnected === 1 && n.connects.length === 0));
+    assert.ok(nodes.slice(0, persistent).every(n => n.disconnected === 0)); qa.useAudio(null);
+  });
+
+  await t.test('browser Back restores a paused AR session instead of a stopped camera', () => {
+    const counts = { pause: 0, resume: 0, stop: 0 };
+    qa.setTracker({ active: true, ready: true, pause() { counts.pause++; }, resume() { counts.resume++; }, stop() { counts.stop++; } });
+    for (const cb of events.get('pagehide')) cb({ persisted: true });
+    assert.deepEqual(counts, { pause: 1, resume: 0, stop: 0 });
+    for (const cb of events.get('pageshow')) cb({ persisted: true });
+    assert.deepEqual(counts, { pause: 1, resume: 1, stop: 0 });
+    for (const cb of events.get('pagehide')) cb({ persisted: false }); assert.equal(counts.stop, 1);
+  });
+
+  await t.test('tracking loss pauses long sounds together with the visual effect', () => {
+    const tracker = { active: true, ready: false };
+    const context = { state: 'running', createGain: () => ({}), suspend() { this.state = 'suspended'; return Promise.resolve(); }, resume() { this.state = 'running'; return Promise.resolve(); } };
+    qa.setTracker(tracker); qa.useAudio(context); qa.trackingState(false); assert.equal(context.state, 'suspended');
+    tracker.ready = true; qa.trackingState(true); assert.equal(context.state, 'running');
+    qa.useAudio(null);
+  });
 });

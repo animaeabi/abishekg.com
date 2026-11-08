@@ -4,7 +4,7 @@ import * as THREE from 'three';
 import { createCrackerModel } from '../public/namma-vedis/cracker-models.mjs';
 import { createWalaLayout, WALA_CONFIGS } from '../public/namma-vedis/wala-layout.mjs';
 
-for (const kind of ['atom', 'sutli', 'lakshmi']) {
+for (const kind of ['atom', 'sutli', 'lakshmi', 'flower', 'spinner']) {
   test(`${kind} has opaque lit geometry, a shrinking physical fuse, and owned-resource cleanup`, () => {
     const texture = new THREE.Texture(); let textureDisposed = false;
     texture.addEventListener('dispose', () => { textureDisposed = true; });
@@ -22,7 +22,7 @@ for (const kind of ['atom', 'sutli', 'lakshmi']) {
     for (const [m] of materialDisposals) m.addEventListener('dispose', () => materialDisposals.set(m, materialDisposals.get(m) + 1));
     const bounds = new THREE.Box3().setFromObject(model.group, true);
     assert.ok(bounds.min.y >= -0.0001, 'model rests on the placement plane');
-    assert.ok(bounds.max.y > .1 && bounds.max.z - bounds.min.z > .03, 'model has three-dimensional volume');
+    assert.ok(bounds.max.y > (kind === 'spinner' ? .04 : .1) && bounds.max.z - bounds.min.z > .03, 'model has three-dimensional volume');
     model.group.position.set(2, .7, -3);
     const initialTip = model.burn(0), fuse = model.group.getObjectByName('solid-curved-fuse');
     const fullCount = fuse.geometry.drawRange.count;
@@ -30,6 +30,7 @@ for (const kind of ['atom', 'sutli', 'lakshmi']) {
     assert.ok(halfTip.y < initialTip.y); assert.ok(halfTip.y > .7 + model.height);
     assert.ok(fuse.geometry.drawRange.count < fullCount);
     model.burn(1); assert.equal(fuse.geometry.drawRange.count, 0);
+    model.extinguish(); assert.equal(model.group.getObjectByName('burning-fuse-tip').visible, false);
     model.dispose(); model.dispose();
     assert.ok([...geometryDisposals.values()].every(n => n === 1));
     assert.ok([...materialDisposals.values()].every(n => n === 1));

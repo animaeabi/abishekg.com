@@ -50,7 +50,7 @@ button:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
 }
 #picker::-webkit-scrollbar { display: none; }
 .pick {
-  flex: none; width: 76px; display: grid; justify-items: center; gap: 3px; padding: 9px 4px 8px; border: 0; border-radius: 14px; cursor: pointer;
+  flex: none; min-width: 84px; width: max-content; display: grid; justify-items: center; gap: 3px; padding: 9px 10px 8px; border: 0; border-radius: 14px; cursor: pointer;
   background: var(--tray); font-size: 12.5px; white-space: nowrap;
 }
 .pick svg { width: 28px; height: 28px; stroke: currentColor; fill: none; stroke-width: 1.7; stroke-linecap: round; stroke-linejoin: round; }

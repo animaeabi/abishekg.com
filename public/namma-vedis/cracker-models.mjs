@@ -24,7 +24,27 @@ export function createCrackerModel(kind, textures = {}) {
   const dark = material(0x30251b, { roughness: 1 });
   const body = material(0xffffff, { map: textures[kind] || null, emissive: 0xff8b23, emissiveIntensity: 0 });
   let height;
-  if (kind === 'sutli') {
+  if (kind === 'spinner') {
+    height = .022;
+    add('flat-paper-base', new THREE.CylinderGeometry(.069, .072, .006, 40), paper, .003);
+    const coil = [];
+    for (let i = 0; i <= 256; i++) {
+      const u = i / 256, angle = u * Math.PI * 8.4, radius = .008 + .054 * u;
+      coil.push(new THREE.Vector3(Math.cos(angle) * radius, .013, Math.sin(angle) * radius));
+    }
+    add('solid-coiled-paper', new THREE.TubeGeometry(new THREE.CatmullRomCurve3(coil), 300, .0055, 8, false), body);
+    add('center-seal', new THREE.CylinderGeometry(.009, .009, .004, 24), dark, .014);
+  } else if (kind === 'flower') {
+    height = .145;
+    const clay = material(0x995b36, { roughness: .98 });
+    add('wide-clay-foot', new THREE.CylinderGeometry(.072, .076, .014, 40), clay, .007);
+    const cone = new THREE.CylinderGeometry(.012, .069, .125, 48);
+    add('opaque-conical-wrapper', cone, body, .0765);
+    rim('rolled-base-rim', .069, .003, .017, paper);
+    rim('gold-wrapper-band', .043, .0017, .073, paper);
+    add('clay-nozzle', new THREE.CylinderGeometry(.013, .016, .009, 24), clay, .1405);
+    add('dark-nozzle-opening', new THREE.CircleGeometry(.008, 24), dark, height + .0002).rotation.x = -Math.PI / 2;
+  } else if (kind === 'sutli') {
     height = .106;
     add('solid-jute-core', new THREE.SphereGeometry(.05, 32, 24), body, .053);
     // A raised spiral and crossing cords make the wrapping readable in profile.
@@ -70,9 +90,10 @@ export function createCrackerModel(kind, textures = {}) {
     }
     add('fuse-entry', new THREE.CylinderGeometry(.0038, .0038, .0018, 16), dark, height + .0004);
   }
-  const curve = new THREE.CubicBezierCurve3(new THREE.Vector3(0, height, 0),
-    new THREE.Vector3(.001, height + .012, .001), new THREE.Vector3(.014, height + .022, -.002),
-    new THREE.Vector3(.019, height + .032, -.003));
+  const fuseX = kind === 'spinner' ? .062 : 0;
+  const curve = new THREE.CubicBezierCurve3(new THREE.Vector3(fuseX, height, 0),
+    new THREE.Vector3(fuseX + .001, height + .012, .001), new THREE.Vector3(fuseX + .014, height + .022, -.002),
+    new THREE.Vector3(fuseX + .019, height + .032, -.003));
   const fuseGeometry = new THREE.TubeGeometry(curve, 36, .0016, 6, false);
   add('solid-curved-fuse', fuseGeometry, cord);
   const emberMaterial = material(0xffb04d, { emissive: 0xff7418, emissiveIntensity: 1.7, roughness: .5 });
@@ -90,6 +111,7 @@ export function createCrackerModel(kind, textures = {}) {
       group.updateMatrixWorld(true);
       return group.localToWorld(ember.position.clone());
     },
+    extinguish() { ember.visible = false; body.emissiveIntensity = 0; },
     dispose() {
       if (disposed) return;
       disposed = true; group.removeFromParent();

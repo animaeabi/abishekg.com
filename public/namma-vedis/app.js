@@ -190,7 +190,7 @@ const sparkMat = new THREE.ShaderMaterial({
       float d = length(vec2(max(abs(vP.x) - vH, 0.0), vP.y)) / vR;
       if (d >= 1.0) discard;
       float halo = pow(1.0 - d, 3.0);
-      float core = smoothstep(0.36, 0.02, d);
+      float core = 1.0 - smoothstep(0.02, 0.36, d);
       float along = vH > 0.5 ? clamp((vP.x + vH) / (2.0 * vH), 0.0, 1.0) : 1.0;
       vec3 c = vG > 0.5
         ? vC.rgb * halo * halo
@@ -287,8 +287,12 @@ const smokeMat = new THREE.ShaderMaterial({
     void main() {
       vUv = position.xy * 0.5 + 0.5; vC = iCol; vHard = iSize.z;
       float c = cos(iSize.y), s = sin(iSize.y);
+      vec2 offset = vec2(position.x * c - position.y * s, position.x * s + position.y * c) * iSize.x;
       vec4 mv = viewMatrix * vec4(iPos, 1.0);
-      mv.xy += vec2(position.x * c - position.y * s, position.x * s + position.y * c) * iSize.x;
+      // Landed paper lies on the original floor, rather than turning to face
+      // the camera like airborne smoke. This keeps its shape fixed in AR.
+      if (iSize.z > 1.5) mv = viewMatrix * vec4(iPos + vec3(offset.x, 0.0, offset.y), 1.0);
+      else mv.xy += offset;
       gl_Position = projectionMatrix * mv;
     }`,
   fragmentShader: `
@@ -334,7 +338,8 @@ function updateSmoke(dt) {
     sPos[n * 3] = S.x[i]; sPos[n * 3 + 1] = S.y[i]; sPos[n * 3 + 2] = S.z[i];
     sCol[n * 4] = (S.r[i] + (S.r2[i] - S.r[i]) * m) * lift; sCol[n * 4 + 1] = (S.g[i] + (S.g2[i] - S.g[i]) * m) * lift; sCol[n * 4 + 2] = (S.b[i] + (S.b2[i] - S.b[i]) * m) * lift;
     sCol[n * 4 + 3] = S.a[i] * (hard ? (k < .85 ? 1 : 1 - (k - .85) / .15) : Math.min(1, k * 7) * (1 - k));
-    sSize[n * 3] = S.size[i]; sSize[n * 3 + 1] = S.rot[i]; sSize[n * 3 + 2] = S.hard[i];
+    sSize[n * 3] = S.size[i]; sSize[n * 3 + 1] = S.rot[i];
+    sSize[n * 3 + 2] = hard && S.y[i] <= S.groundY[i] + .0021 ? 2 : S.hard[i];
     n++;
   }
   smokeGeo.instanceCount = n;
@@ -343,12 +348,18 @@ function updateSmoke(dt) {
 
 /* ---------- Sound, all synthesized ---------- */
 let actx = null, master = null, noiseBuf = null, verbIn = null, muted = false;
+function syncAudioPlayback() {
+  if (!actx) return;
+  const paused = document.hidden || (playing && worldTracking?.active && !worldTracking.ready);
+  if (paused) { if (actx.state === 'running') actx.suspend()?.catch(() => {}); }
+  else if (actx.state !== 'running') actx.resume()?.catch(() => {});
+}
 function ensureAudio() {
   if (!actx) {
     const AC = window.AudioContext || window.webkitAudioContext;
     if (!AC) return;
     try { if (navigator.audioSession) navigator.audioSession.type = 'playback'; } catch (e) { /* older Safari: the silent switch mutes it */ }
-    actx = new AC();
+    try { actx = new AC(); } catch { return; }
     master = actx.createGain();
     master.gain.value = muted ? 0 : .9;
     const comp = actx.createDynamicsCompressor();
@@ -377,14 +388,16 @@ function ensureAudio() {
     verbIn = actx.createGain();
     verbIn.connect(verb); verb.connect(master);
   }
-  if (actx.state !== 'running') actx.resume(); // iOS parks it as "interrupted" when the camera starts
+  syncAudioPlayback(); // Resume an interrupted context on the next permitted tap/frame.
 }
 addEventListener('touchend', () => { if (playing) ensureAudio(); }, { passive: true });
 function route(node, pan, wet) {
   let out = node;
-  if (actx.createStereoPanner) { const p = actx.createStereoPanner(); p.pan.value = clamp(pan || 0, -1, 1); node.connect(p); out = p; }
+  const owned = [node];
+  if (actx.createStereoPanner) { const p = actx.createStereoPanner(); p.pan.value = clamp(pan || 0, -1, 1); node.connect(p); out = p; owned.push(p); }
   out.connect(master);
-  if (wet) { const w = actx.createGain(); w.gain.value = wet; out.connect(w); w.connect(verbIn); }
+  if (wet) { const w = actx.createGain(); w.gain.value = wet; out.connect(w); w.connect(verbIn); owned.push(w); }
+  return () => owned.forEach(n => n.disconnect());
 }
 function tone({ type = 'sine', f0, f1 = f0, dur, vol, pan = 0, wet = 0, delay = 0 }) {
   if (!actx || muted) return;
@@ -396,7 +409,8 @@ function tone({ type = 'sine', f0, f1 = f0, dur, vol, pan = 0, wet = 0, delay = 
   g.gain.setValueAtTime(.0001, t);
   g.gain.exponentialRampToValueAtTime(vol, t + .004);
   g.gain.exponentialRampToValueAtTime(.0001, t + dur);
-  o.connect(g); route(g, pan, wet);
+  o.connect(g); const disconnect = route(g, pan, wet);
+  o.onended = () => { o.disconnect(); disconnect(); };
   o.start(t); o.stop(t + dur + .05);
 }
 function noise({ dur, vol, f0, f1 = f0, type = 'lowpass', q = .7, pan = 0, wet = 0, delay = 0, attack = .003, hold = false }) {
@@ -411,7 +425,8 @@ function noise({ dur, vol, f0, f1 = f0, type = 'lowpass', q = .7, pan = 0, wet =
   g.gain.exponentialRampToValueAtTime(vol, t + attack);
   if (hold) g.gain.setValueAtTime(vol, t + dur * .82);
   g.gain.exponentialRampToValueAtTime(.0001, t + dur);
-  s.connect(f); f.connect(g); route(g, pan, wet);
+  s.connect(f); f.connect(g); const disconnect = route(g, pan, wet);
+  s.onended = () => { s.disconnect(); f.disconnect(); disconnect(); };
   s.start(t, Math.random() * 1.5); s.stop(t + dur + .05);
 }
 const sfx = {
@@ -421,7 +436,7 @@ const sfx = {
   fizz(dur, pan) { noise({ dur, vol: .22, f0: 5400, f1: 1900, type: 'bandpass', q: .8, pan, attack: .04, wet: .35 }); },
   // A shell bursting high up: a sharp crack, a heavy body, then the street answers. You hear it after you see it.
   burst(p, size = 1) {
-    const dist = p.length(), delay = clamp(dist / 340, .18, .55), pan = panFor(p);
+    const dist = p.distanceTo(camera.position), delay = clamp(dist / 340, .18, .55), pan = panFor(p);
     noise({ dur: .05, vol: .7, f0: 3200, type: 'highpass', pan, wet: .9, delay });
     noise({ dur: .75 * size, vol: .6, f0: 1500, f1: 95, pan, wet: 1.1, delay });
     tone({ f0: 78, f1: 30, dur: .85 * size, vol: .75 * size, pan, wet: .5, delay });
@@ -429,7 +444,7 @@ const sfx = {
   },
   // A rocket's payload is small: all crack and very little body.
   crack(p) {
-    const delay = clamp(p.length() / 340, .18, .55), pan = panFor(p);
+    const delay = clamp(p.distanceTo(camera.position) / 340, .18, .55), pan = panFor(p);
     noise({ dur: .04, vol: .8, f0: 3800, type: 'highpass', pan, wet: .9, delay });
     noise({ dur: .28, vol: .4, f0: 1800, f1: 240, pan, wet: .8, delay });
     tone({ f0: 140, f1: 60, dur: .18, vol: .3, pan, wet: .3, delay });
@@ -449,6 +464,14 @@ const sfx = {
     tone({ f0: 210, f1: 80, dur: .05, vol: .2 * v, pan, delay });
   },
   fuse(dur, pan) { noise({ dur, vol: .13, f0: 7500, f1: 5200, type: 'highpass', pan, hold: true }); this.crackle(Math.floor(dur * 24), pan, 0, dur); },
+  fountain(dur, pan) {
+    noise({ dur, vol: .14, f0: 3400, f1: 1300, pan, hold: true, attack: .4, wet: .16 });
+    noise({ dur, vol: .045, f0: 5700, f1: 8000, type: 'highpass', pan, hold: true, attack: .6, wet: .08 });
+  },
+  spin(dur, pan) {
+    noise({ dur, vol: .13, f0: 2400, f1: 5200, type: 'bandpass', q: .5, pan, hold: true, attack: .5, wet: .16 });
+    noise({ dur, vol: .035, f0: 6500, f1: 2400, type: 'highpass', pan, hold: true, attack: .5 });
+  },
   bomb(pan, power = 1) {
     const body = .55 + .45 * power;
     noise({ dur: .07, vol: body, f0: 1400, type: 'highpass', pan, wet: 1 });
@@ -516,26 +539,26 @@ function shellStars(p, n, R, k, life, size, c1, c2, grav, flag, tl) {
     spawn(p.x, p.y, p.z, dx * s, dy * s, dz * s, life * rand(.82, 1.08), size * rand(.8, 1.2), c1, c2, k, grav, flag, tl);
   }
 }
-function peony(p, silent, scale = 1) {
-  const [a, b] = pick(PAIRS), D = p.length(), R = D * rand(.25, .29) * scale;
+function peony(p, silent, scale = 1, origin = camera.position) {
+  const [a, b] = pick(PAIRS), D = p.distanceTo(origin), R = D * rand(.25, .29) * scale;
   burstCommon(p, R, a, silent, scale);
   shellStars(p, 230 * scale, R, 2, 2.15, D * .0115, a, b, 9.8, F.LATE, 0);
   shellStars(p, 80 * scale, R * .45, 2.3, 1.5, D * .009, b, C.white, 9.8, F.LATE, 0);
 }
-function chrysanthemum(p, silent, scale = 1) {
-  const [a, b] = pick(PAIRS), D = p.length(), R = D * rand(.28, .32) * scale;
+function chrysanthemum(p, silent, scale = 1, origin = camera.position) {
+  const [a, b] = pick(PAIRS), D = p.distanceTo(origin), R = D * rand(.28, .32) * scale;
   burstCommon(p, R, a, silent, 1.2 * scale);
   shellStars(p, 210 * scale, R, 1.9, 2.5, D * .0115, C.white, a, 9.8, F.TRAIL | F.LATE, .5);
   shellStars(p, 45, R * .3, 2.2, 1.3, D * .01, b, b, 6, F.TWINKLE | F.LATE, 0);
 }
-function goldenRain(p, silent) {
-  const D = p.length(), R = D * rand(.24, .27);
+function goldenRain(p, silent, _scale = 1, origin = camera.position) {
+  const D = p.distanceTo(origin), R = D * rand(.24, .27);
   const delay = burstCommon(p, R, C.gold, silent, .85);
   shellStars(p, 175, R, 1.45, 4.3, D * .0095, C.gold, C.charcoal, 9.8, F.TRAIL | F.LATE, 1.15);
   if (!silent) sfx.sizzle(3.6, panFor(p), delay + .2);
 }
-function crackling(p, silent) {
-  const D = p.length(), R = D * rand(.22, .26);
+function crackling(p, silent, _scale = 1, origin = camera.position) {
+  const D = p.distanceTo(origin), R = D * rand(.22, .26);
   const delay = burstCommon(p, R, C.silver, silent, .75);
   shellStars(p, 110, R, 2, 1.25, D * .009, C.gold, C.silver, 9.8, F.CRACKLE | F.LATE, 0);
   if (!silent) sfx.crackle(90, panFor(p), delay + 1, 1.05);
@@ -543,6 +566,7 @@ function crackling(p, silent) {
 // Every shell climbs to where you tapped before it breaks, so you see the tail and hear the tube first.
 function launch(target, burst, T = rand(.6, .78), silent = false, view = VIEW()) {
   const start = view.origin.clone().lerp(target, .32); start.y = view.groundY ?? floorY;
+  const size = target.distanceTo(view.origin) * .004;
   const pos = new THREE.Vector3(), last = start.clone();
   if (!silent) sfx.lift(panFor(target));
   let t = 0;
@@ -550,19 +574,18 @@ function launch(target, burst, T = rand(.6, .78), silent = false, view = VIEW())
     t += dt;
     const k = Math.min(1, t / T), e = 1 - (1 - k) * (1 - k);
     pos.lerpVectors(start, target, e);
-    const size = target.length() * .004;
     for (let i = 0; i < 4; i++) {
       const f = i / 4;
       spawn(last.x + (pos.x - last.x) * f, last.y + (pos.y - last.y) * f, last.z + (pos.z - last.z) * f, rand(-1, 1), rand(-4, -1), rand(-1, 1), rand(.2, .45), size * rand(.6, 1.1), C.gold, C.charcoal, 1.5, 3, 0, 0, .06);
     }
     last.copy(pos);
-    if (k >= 1) { burst(target.clone(), silent); return false; }
+    if (k >= 1) { burst(target.clone(), silent, 1, view.origin); return false; }
     return true;
   } });
 }
 // A rocket is a small motor with a small payload: it burns out, coasts for a beat in the dark, then cracks open into a few heavy comets.
-function rocketBreak(p) {
-  const D = p.length(), R = D * rand(.17, .2), c = pick([C.gold, C.gold, C.red, C.green, C.silver]);
+function rocketBreak(p, origin = camera.position) {
+  const D = p.distanceTo(origin), R = D * rand(.17, .2), c = pick([C.gold, C.gold, C.red, C.green, C.silver]);
   glowAt(p, R * 1.1, C.white, .09);
   lightScene(c, .08);
   shellSmoke(p, R, c, 8);
@@ -577,9 +600,10 @@ function rocketBreak(p) {
   }
 }
 function rocket(target) {
-  const start = camera.position.clone().lerp(target, .2); start.y = floorY;
+  const { r, origin, groundY } = VIEW();
+  const start = origin.clone().lerp(target, .2); start.y = groundY;
   const pos = new THREE.Vector3(), last = start.clone();
-  const { r } = VIEW(), bow = target.length() * rand(.02, .045) * (Math.random() < .5 ? -1 : 1), wob = rand(0, TAU);
+  const bow = target.distanceTo(origin) * rand(.02, .045) * (Math.random() < .5 ? -1 : 1), wob = rand(0, TAU);
   const burn = rand(.95, 1.15), T = burn + rand(.32, .46), ember = [.8, .3, .06];
   sfx.fizz(burn + .2, panFor(target));
   let t = 0;
@@ -587,7 +611,7 @@ function rocket(target) {
     t += dt;
     const e = t < burn ? .8 * Math.pow(t / burn, 1.7) : .8 + .2 * (1 - Math.pow(1 - Math.min(1, (t - burn) / (T - burn)), 2));
     pos.lerpVectors(start, target, e).addScaledVector(r, Math.sin(Math.PI * e) * bow + Math.sin(t * 30 + wob) * .14 * (1 - e));
-    const D = pos.length();
+    const D = pos.distanceTo(origin);
     if (t < burn) {
       spawn(pos.x, pos.y, pos.z, pos.x - last.x, pos.y - last.y, pos.z - last.z, rand(.16, .26), D * .0024, C.white, C.charcoal, 0, 0, F.SEG, 0, 1, -1);
       for (let i = 0; i < 3; i++) {
@@ -597,7 +621,7 @@ function rocket(target) {
       glowAt(pos, D * .012, C.gold, .05);
     } else spawn(pos.x, pos.y, pos.z, 0, 0, 0, .05, D * .0028, ember, ember, 0, 0);
     last.copy(pos);
-    if (t >= T) { rocketBreak(target.clone()); return false; }
+    if (t >= T) { rocketBreak(target.clone(), origin); return false; }
     return true;
   } });
 }
@@ -611,7 +635,7 @@ function twelveShot(target) {
     while (n < 12 && n * .24 <= t) {
       const off = ((n % 2 ? 1 : -1) * (6 - Math.abs(n - 6))) * .05 + rand(-.015, .015);
       const d = dir.clone().addScaledVector(r, off).normalize().multiplyScalar(dist * rand(.88, 1.08)).add(origin);
-      launch(d, (q, s) => peony(q, s, .55), rand(.42, .56), false, view);
+      launch(d, (q, s, _scale, origin) => peony(q, s, .55, origin), rand(.42, .56), false, view);
       n++;
     }
     return n < 12;
@@ -643,6 +667,21 @@ function paperTex(draw) {
   return t;
 }
 const TEX = {
+  spinner: paperTex((x) => {
+    x.fillStyle = '#b63527'; x.fillRect(0, 0, 128, 128);
+    x.fillStyle = '#ecd183';
+    for (let i = 0; i < 128; i += 32) x.fillRect(i, 0, 5, 128);
+  }),
+  flower: paperTex((x) => {
+    x.fillStyle = '#a72731'; x.fillRect(0, 0, 128, 128);
+    x.fillStyle = '#e7b64e'; x.fillRect(0, 16, 128, 7); x.fillRect(0, 93, 128, 16);
+    x.strokeStyle = '#f5dc94'; x.lineWidth = 2;
+    for (let i = 0; i < 4; i++) {
+      const cx = 16 + i * 32;
+      x.beginPath(); x.moveTo(cx, 40); x.lineTo(cx + 10, 57); x.lineTo(cx, 74); x.lineTo(cx - 10, 57); x.closePath(); x.stroke();
+      x.beginPath(); x.arc(cx, 57, 4, 0, TAU); x.stroke();
+    }
+  }),
   atom: paperTex((x) => {
     x.fillStyle = '#2c6a41'; x.fillRect(0, 0, 128, 128);
     x.fillStyle = '#e9c23a'; x.fillRect(0, 50, 128, 28);
@@ -721,10 +760,10 @@ function bomb(p, b) {
     }
     dropProp(prop);
     const c = { x: p.x, y: groundY + .18, z: p.z };
-    glowAt(c, 3.2 * R, C.white, .12);
-    glowAt(c, 2 * R, C.amber, .4);
-    floorPulse(p.x, p.z, [1, .85, .6], 3.4 * power, 6 * R, 3.2, groundY);
-    lightScene([1, .88, .68], power);
+    glowAt(c, .7 * R, C.white, .075);
+    glowAt(c, 1.1 * R, C.amber, .24);
+    floorPulse(p.x, p.z, [1, .85, .6], 1.2 * power, 2.6 * R, 4.8, groundY);
+    lightScene([1, .88, .68], .28 * power);
     if (power > .5) shake = (reduceMotion ? .2 : 1) * power;
     sfx.bomb(pan, power);
     if (b === BOMBS.atom) {
@@ -749,6 +788,113 @@ function bomb(p, b) {
     return false;
   } });
 }
+// Flower pot / cone fountain: sustained upward spray, then falling embers.
+// Counts accumulate per second so 30/60/120 Hz phones get the same fountain.
+function flowerPot(p) {
+  const groundY = p.y, model = createCrackerModel('flower', TEX);
+  model.group.position.copy(p); world.add(model.group);
+  const prop = { model, shadow: contactShadow(p.x, p.z, .13, .5, groundY) };
+  const nozzle = p.clone(); nozzle.y += model.height + .006;
+  const fuse = .85, burn = 9.5, cool = 4;
+  let t = 0, carry = 0, smokeAt = 0, coreAt = 0, crackleAt = .25, lit = false, serial = 0;
+  sfx.fuse(fuse, panFor(p));
+  const fountain = { ground: true, flower: true, phase: 'fuse', update(dt) {
+    t += dt;
+    if (t < fuse) {
+      const tip = model.burn(t / fuse);
+      for (let k = 0; k < 3; k++) spawn(tip.x, tip.y, tip.z, rand(-.3, .3), rand(.4, 1.1), rand(-.3, .3), .18, .006, C.gold, C.amber, 1.4, 5, 0, 0, .025, 0, groundY);
+      floorGlow(p.x, p.z, C.amber, .13, .3, groundY);
+      return true;
+    }
+    const elapsed = t - fuse;
+    if (elapsed < burn) {
+      fountain.phase = 'fountain';
+      if (!lit) { lit = true; sfx.fountain(burn - elapsed, panFor(p)); vibrate(10); }
+      const heat = clamp(elapsed / .9, 0, 1) * clamp((burn - elapsed) / 1.4, 0, 1);
+      model.burn(1, .5 * heat);
+      carry += (160 + 150 * heat) * dt * quality;
+      const whole = Math.floor(carry), count = Math.min(24, whole); carry -= whole;
+      for (let k = 0; k < count; k++) {
+        const angle = rand(0, TAU), white = Math.random() < .18;
+        const radial = rand(.25, white ? .65 : 2.1) * (.25 + .75 * heat);
+        const vy = rand(white ? 6.8 : 4.2, 8.4) * (.24 + .76 * heat);
+        const flags = F.BOUNCE | (serial++ % 4 === 0 ? F.TRAIL : 0);
+        spawn(nozzle.x + rand(-.005, .005), nozzle.y, nozzle.z + rand(-.005, .005),
+          Math.cos(angle) * radial, vy, Math.sin(angle) * radial, rand(1.1, 1.9), rand(.006, .011),
+          white ? C.white : C.gold, C.charcoal, .28, 9.8, flags, .22, .025, 0, groundY);
+      }
+      if (elapsed >= coreAt) {
+        coreAt = elapsed + .035;
+        glowAt(nozzle, .045 + .035 * heat, C.white, .055);
+        glowAt(nozzle, .11 + .05 * heat, C.amber, .075);
+      }
+      floorGlow(p.x, p.z, C.gold, .15 + .22 * heat, .45 + .7 * heat, groundY);
+      if (elapsed >= smokeAt) { smokeAt = elapsed + .12; groundSmoke(nozzle.x, nozzle.y, nozzle.z, [.6, .46, .27], 1, .045, .4); }
+      if (elapsed >= crackleAt) {
+        crackleAt = elapsed + rand(.18, .35);
+        noise({ dur: .025, vol: .045 * heat + .01, f0: 4400, type: 'highpass', pan: panFor(p), wet: .12 });
+      }
+      return true;
+    }
+    fountain.phase = 'cooling'; model.extinguish();
+    if (elapsed < burn + 1.2 && elapsed >= smokeAt) {
+      smokeAt = elapsed + .2; groundSmoke(nozzle.x, nozzle.y, nozzle.z, [.24, .23, .21], 1, .035, .2);
+    }
+    if (elapsed >= burn + cool) { dropProp(prop); return false; }
+    return true;
+  } };
+  emitters.push(fountain);
+}
+
+function sanguchakram(p) {
+  const groundY = p.y, model = createCrackerModel('spinner', TEX);
+  model.group.position.copy(p); world.add(model.group);
+  const prop = { model, shadow: contactShadow(p.x, p.z, .11, .48, groundY) };
+  const fuse = .75, burn = 7, cool = 3;
+  let t = 0, angle = 0, carry = 0, smokeAt = 0, coreAt = 0, lit = false, serial = 0;
+  sfx.fuse(fuse, panFor(p));
+  const wheel = { ground: true, spinner: true, phase: 'fuse', update(dt) {
+    t += dt;
+    if (t < fuse) {
+      const tip = model.burn(t / fuse);
+      for (let k = 0; k < 3; k++) spawn(tip.x, tip.y, tip.z, rand(-.4, .4), rand(.3, .8), rand(-.4, .4), .16, .006, C.gold, C.amber, 1, 5, 0, 0, .025, 0, groundY);
+      return true;
+    }
+    const elapsed = t - fuse;
+    if (elapsed < burn) {
+      wheel.phase = 'spinning';
+      if (!lit) { lit = true; model.burn(1); model.extinguish(); sfx.spin(burn - elapsed, panFor(p)); vibrate(8); }
+      const heat = clamp(elapsed / .8, 0, 1) * clamp((burn - elapsed) / 1.1, 0, 1);
+      const oldAngle = angle; angle += (5 + 48 * heat) * dt * (reduceMotion ? .6 : 1);
+      model.group.rotation.y = -angle;
+      const color = elapsed > 2.4 && elapsed < 5.4 ? C.silver : C.gold;
+      carry += (180 + 140 * heat) * dt * quality;
+      const whole = Math.floor(carry), count = Math.min(24, whole); carry -= whole;
+      for (let k = 0; k < count; k++) {
+        // Sample THROUGH the rotation during this frame, avoiding discrete
+        // spokes when a fast wheel is viewed on a slower phone.
+        const a = oldAngle + (angle - oldAngle) * (k + .5) / count;
+        const cs = Math.cos(a), sn = Math.sin(a), v = rand(2.2, 5.2) * (.3 + .7 * heat);
+        const flags = F.BOUNCE | (serial++ % 5 === 0 ? F.TRAIL : 0);
+        spawn(p.x + cs * .064, groundY + .023, p.z + sn * .064,
+          (-sn + cs * .4) * v, rand(.12, .65), (cs + sn * .4) * v, rand(.35, .8), rand(.006, .01),
+          color, C.amber, 1.2, 6.5, flags, .15, .025, 0, groundY);
+      }
+      if (elapsed >= coreAt) {
+        coreAt = elapsed + .035;
+        glowAt({ x: p.x + Math.cos(angle) * .064, y: groundY + .023, z: p.z + Math.sin(angle) * .064 }, .07, color, .05);
+      }
+      floorGlow(p.x, p.z, color, .13 + .16 * heat, .4 + .5 * heat, groundY);
+      if (elapsed >= smokeAt) { smokeAt = elapsed + .16; groundSmoke(p.x, groundY + .04, p.z, [.42, .36, .27], 1, .04, .16); }
+      return true;
+    }
+    wheel.phase = 'cooling'; model.extinguish();
+    if (elapsed >= burn + cool) { dropProp(prop); return false; }
+    return true;
+  } };
+  emitters.push(wheel);
+}
+
 // The S-shaped garland and its burn front stay fixed in the world.
 const WALAS = WALA_CONFIGS;
 function wala(p, w) {
@@ -820,13 +966,15 @@ const ICONS = {
   atom: '<circle cx="12" cy="12" r="1.6"/><ellipse cx="12" cy="12" rx="10" ry="4"/><ellipse cx="12" cy="12" rx="10" ry="4" transform="rotate(60 12 12)"/><ellipse cx="12" cy="12" rx="10" ry="4" transform="rotate(120 12 12)"/>',
   sutli: '<circle cx="11" cy="15" r="6.5"/><path d="M15.5 10.5L18 8c1-1 2.5-.5 3 1"/>',
   lakshmi: '<rect x="8" y="9" width="8" height="12" rx="1"/><path d="M12 9V5c0-1.5 2-2 3-1"/>',
+  flower: '<path d="M7 21h10l-3-8h-4zM12 10V2M9 10 6 5M15 10l3-5M6 12 3 9M18 12l3-3"/>',
+  spinner: '<path d="M12 4a8 8 0 1 1-8 8 6 6 0 1 1 6 6 4 4 0 1 1 4-4 2 2 0 1 1-2-2M4 4l2 2M20 3l-2 3M22 14h-3"/>',
   wala100: '<path d="M2 14c3-5 5 3 8-1s5 3 8-1 3-1 4 0"/><path d="M5 9l1 3M10 9l.5 3M15 8l.5 3M20 8l-.5 3"/>',
   wala1000: '<path d="M2 7c3-4 5 2 8-1s5 2 8-1 3-1 4 0"/><path d="M2 13c3-4 5 2 8-1s5 2 8-1 3-1 4 0"/><path d="M2 19c3-4 5 2 8-1s5 2 8-1 3-1 4 0"/>',
   wala10000: '<path d="M2 6h17a2 2 0 0 1 0 4H5a2 2 0 0 0 0 4h14a2 2 0 0 1 0 4H2"/><path d="M7 4v4m5-4v4m5 4v4m-5-4v4M7 16v4m5-4v4"/>',
 };
 const KINDS = {
   sky: [['rocket', 'Tiger Rocket'], ['shot', 'Sky shot'], ['rain', 'Golden rain'], ['crackle', 'Crackling'], ['twelve', '12 shot'], ['finale', 'Alapparai']],
-  ground: [['atom', 'Atom bomb'], ['sutli', 'Hukum Bomb'], ['lakshmi', 'Lakshmi'], ['wala100', '100 wala'], ['wala1000', '1,000 wala'], ['wala10000', '10,000 wala']],
+  ground: [['atom', 'Atom bomb'], ['flower', 'Flower pot'], ['spinner', 'Sanguchakram'], ['sutli', 'Hukum Bomb'], ['lakshmi', 'Lakshmi'], ['wala100', '100 wala'], ['wala1000', '1,000 wala'], ['wala10000', '10,000 wala']],
 };
 const selected = { sky: 'rocket', ground: 'atom', royal: 'hukum' };
 let royalOpen = false;
@@ -900,6 +1048,8 @@ function fireAt(cx, cy) {
     return;
   }
   if (emitters.filter((e) => e.ground).length >= 7) return;
+  if (id === 'flower' && emitters.filter(e => e.flower).length >= 3) { hint('Let a flower pot finish before adding another.', 2000); return false; }
+  if (id === 'spinner' && emitters.filter(e => e.spinner).length >= 3) { hint('Let a Sanguchakram finish before adding another.', 2000); return false; }
   if (id === 'wala10000' && emitters.some((e) => e.largeWala)) { hint('Let this 10,000 wala finish first.', 2000); return false; }
   const spot = placementPoint(cx, cy);
   if (!spot) { hint("Move slowly and aim at a nearby surface.", 2500); return false; }
@@ -911,6 +1061,8 @@ function fireAt(cx, cy) {
     $('effectStatus').textContent = 'Atom bomb · fuse lit';
   }
   if (BOMBS[id]) bomb(spot, BOMBS[id]);
+  else if (id === 'flower') flowerPot(spot);
+  else if (id === 'spinner') sanguchakram(spot);
   else wala(spot, WALAS[id]);
 }
 
@@ -985,6 +1137,7 @@ function trackingState(ready) {
   $('trackingStatus').hidden = ready || !worldTracking?.active;
   $('trackingStatus').textContent = ready ? '' : 'Aim at the floor and move your phone gently side to side.';
   if (!ready) { ring.visible = false; ring.material.opacity = 0; }
+  syncAudioPlayback();
   updateModeLabel();
 }
 async function startWorldCamera() {
@@ -1112,8 +1265,7 @@ $('showBtn').addEventListener('click', () => toggleUi(false));
 // Silence the moment the page isn't on screen.
 document.addEventListener('visibilitychange', () => {
   if (document.hidden) worldTracking?.pause(); else worldTracking?.resume();
-  if (!actx) return;
-  if (document.hidden) actx.suspend(); else if (playing) actx.resume();
+  syncAudioPlayback();
 });
 
 async function requestMotionAccess() {
@@ -1179,11 +1331,20 @@ modeEl.addEventListener('click', () => {
   if (worldTracking?.active || (gyro && orient.ok)) { hint('Automatic: point down for the floor, lift up for the sky.', 3500); return; }
   look.pitch = mode === 'sky' ? -.75 : .12;
 });
-addEventListener('pagehide', () => {
-  worldTracking?.stop();
-  const feed = video.srcObject;
-  if (feed && typeof feed.getTracks === 'function') feed.getTracks().forEach(track => track.stop());
+addEventListener('pagehide', (event) => {
+  if (event.persisted) worldTracking?.pause();
+  else {
+    worldTracking?.stop();
+    const feed = video.srcObject;
+    if (feed && typeof feed.getTracks === 'function') feed.getTracks().forEach(track => track.stop());
+  }
   if (actx) actx.suspend();
+});
+addEventListener('pageshow', (event) => {
+  if (!event.persisted || document.hidden) return;
+  press = null; fingers.clear(); last = performance.now();
+  worldTracking?.resume();
+  if (playing) ensureAudio();
 });
 addEventListener('keydown', e => {
   if (e.target.matches('input, textarea')) return;
@@ -1227,7 +1388,13 @@ function writeSky(title = 'Happy Diwali', view = VIEW()) {
       coordinates.push(p.x, p.y, p.z);
     }
   }
-  const positions = new Float32Array(coordinates), target = positions.slice();
+  const positions = new Float32Array(coordinates), target = positions.slice(), starts = new Float32Array(positions.length);
+  for (let i = 0; i < positions.length; i += 3) {
+    const offset = Math.sin(i * 2.15) * worldWidth * .35;
+    starts[i] = center.x - u.x * 18 + r.x * offset;
+    starts[i + 1] = center.y - u.y * 18 + r.y * offset;
+    starts[i + 2] = center.z - u.z * 18 + r.z * offset;
+  }
   const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
   const dot = document.createElement('canvas'); dot.width = dot.height = 32;
   const d = dot.getContext('2d'), glow = d.createRadialGradient(16, 16, 0, 16, 16, 16);
@@ -1236,28 +1403,26 @@ function writeSky(title = 'Happy Diwali', view = VIEW()) {
   const texture = new THREE.CanvasTexture(dot);
   const mat = new THREE.PointsMaterial({ color: 0xffd295, size: worldWidth / 250, map: texture, transparent: true, opacity: 0, depthTest: false, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false });
   const lettering = new THREE.Points(geo, mat); lettering.renderOrder = 9; lettering.frustumCulled = false; world.add(lettering);
-  let t = 0, dead = false;
+  let t = 0, dead = false, settled = false;
   const cancel = () => { if (dead) return; dead = true; lettering.removeFromParent(); geo.dispose(); mat.dispose(); texture.dispose(); if (activeLettering?.cancel === cancel) activeLettering = null; };
   activeLettering = { cancel };
   emitters.push({ update(dt) {
     if (dead) return false;
     t += dt;
-    const progress = reduceMotion ? 1 : clamp(t / 1.2, 0, 1), ease = 1 - Math.pow(1 - progress, 3);
-    for (let i = 0; i < positions.length; i += 3) {
-      const start = center.clone().addScaledVector(u, -18).addScaledVector(r, Math.sin(i * 2.15) * worldWidth * .35);
-      positions[i] = start.x + (target[i] - start.x) * ease;
-      positions[i + 1] = start.y + (target[i + 1] - start.y) * ease;
-      positions[i + 2] = start.z + (target[i + 2] - start.z) * ease;
+    if (!settled) {
+      const progress = reduceMotion ? 1 : clamp(t / 1.2, 0, 1), ease = 1 - Math.pow(1 - progress, 3);
+      for (let i = 0; i < positions.length; i++) positions[i] = starts[i] + (target[i] - starts[i]) * ease;
+      geo.attributes.position.needsUpdate = true;
+      settled = progress === 1;
     }
-    geo.attributes.position.needsUpdate = true;
     mat.opacity = Math.min(1, t / .4) * Math.min(1, (9 - t) / 1.5) * (.92 + .08 * Math.sin(t * 5));
     if (t >= 9) { cancel(); return false; }
     return true;
   } });
   hint(wishMessage || (wishFrom ? `இனிய தீபாவளி · With love, ${wishFrom}` : 'இனிய தீபாவளி'), 5000);
 }
-function diamondBurst(p, silent) {
-  const D = p.length(), R = D * .29;
+function diamondBurst(p, silent, _scale = 1, origin = camera.position) {
+  const D = p.distanceTo(origin), R = D * .29;
   const delay = burstCommon(p, R, C.silver, silent, 1.2);
   shellStars(p, 260, R, 1.65, 3.2, D * .01, C.white, C.blue, 6, F.TRAIL | F.TWINKLE | F.LATE, .7);
   shellStars(p, 100, R * .48, 1.8, 2.5, D * .009, C.silver, C.violet, 8, F.TWINKLE, 0);
@@ -1270,7 +1435,7 @@ function royalShow(kind) {
     const x = kind === 'hukum' ? ((i % 3) - 1) * .28 : kind === 'thangam' ? ((i % 6) / 5 - .5) * .9 : rand(-.4, .4);
     const y = kind === 'hukum' ? .08 + (Math.floor(i / 3) % 3) * .15 : kind === 'thangam' ? .15 + Math.floor(i / 6) * .025 : rand(-.12, .4);
     const p = f.clone().addScaledVector(r, x).addScaledVector(u, y).normalize().multiplyScalar(rand(115, 145)).add(origin);
-    const fn = kind === 'thangam' ? goldenRain : kind === 'diamond' ? diamondBurst : (q, silent) => chrysanthemum(q, silent, 1.2);
+    const fn = kind === 'thangam' ? goldenRain : kind === 'diamond' ? diamondBurst : (q, silent, _scale, origin) => chrysanthemum(q, silent, 1.2, origin);
     plan.push({ at: i * .19, p, fn });
   }
   let elapsed = 0, n = 0, written = false;

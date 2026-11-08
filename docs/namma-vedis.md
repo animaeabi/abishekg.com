@@ -62,6 +62,22 @@ and camera processing pause when the page is backgrounded.
 
 ## Validation
 
+Flower pot is a solid decorated cone with a 0.85-second fuse, a 9.5-second
+gold-and-white fountain, falling sparks, a restrained hiss/crackle and a
+four-second cooling finish. Sanguchakram is a solid coiled disc with a
+0.75-second fuse, a seven-second gold/silver ground spin and three seconds of
+cooling. Their roots, contact shadows and spark bounce planes retain the
+placement coordinates. The disc rotates around its own center. Three of each
+may coexist within the shared seven-ground-effect limit. Both obey the Atom
+completion gate and hide the placement ring when placed.
+
+The November 8 release audit also fixes landed paper facing the camera,
+undefined reversed-edge spark shading, oversized bomb glow, sky burst sizing
+relative to the session origin, repeated updates to settled sky lettering,
+sound-node cleanup and Back/Forward restoration. Audio pauses with tracking
+loss so a fountain or ringing tail cannot finish while its visuals are frozen.
+See `namma-vedis-release-audit.md` for results and remaining device checks.
+
 Ground bodies use opaque, depth-writing, physically shaded geometry with rounded
 paper bodies, pressed caps, raised bindings and a curved fuse that burns back to
 the body. Floor light, contact shadows, sparks and smoke depth-test against these
@@ -79,6 +95,8 @@ events are batched per frame and only one 10,000 string can run at a time. The
   camera translation, reticle lifecycle, tracking loss/recovery, startup failure,
   audio completion gate, opaque model geometry and disposal, continuous S-shaped
   layout, all 10,000 instances and their lifecycle in the actual application.
+  All 30 checks pass, including fountain/spinner lifecycle, fixed centers,
+  translated sky origins, settled paper/lettering, sound cleanup and recovery.
 - `node --check public/namma-vedis/app.js`
 - `npm run build`: Next.js export plus local AR runtime assets.
 
