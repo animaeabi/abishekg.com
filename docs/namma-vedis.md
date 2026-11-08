@@ -13,13 +13,16 @@ The landing title cycles through Tamil, Hindi and Telugu in Latin letters every
 1.8 seconds with a 180 ms transition. The existing `/namma-vedis` route remains
 valid after the name change.
 
+The landing footer shows only “Namma Pattas · by Abishek”. That name links to
+`/namma-vedis/credits`, where original-experience and AR-engine notices remain.
+
 ## World placement
 
 Camera mode now uses the pinned `@8thwall/engine-binary@1.0.0` distributed SLAM
 runtime. It tracks translation and rotation together on mobile browsers,
 including iOS Safari, independently of native WebXR support. The runtime is
 copied unchanged into `/namma-vedis/xr/1.0.0/` by the prebuild/predev script. The full
-license ships with it and is linked in the welcome-screen attribution.
+license ships with it and is linked from the credits page.
 
 The runtime owns camera capture and frame timing. Three.js uses the runtime's
 wrapped GL context, tracked camera pose, calibrated projection, and cropped

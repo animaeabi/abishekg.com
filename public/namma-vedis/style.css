@@ -74,7 +74,7 @@ button:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
 #start h1 { font-size: clamp(35px, 10vw, 60px); }
 #start p { max-width: 34ch; }
 #start #credit { font-size: 11px; line-height: 1.8; }
-#credit a { color: var(--muted); font-size: 9px; text-decoration: none; }
+#credit a { color: var(--muted); font-size: inherit; text-decoration: none; }
 #start .fine { max-width: 38ch; font-size: 11px; line-height: 1.6; }
 .pill { padding: 8px 13px; border-radius: 50px; background: var(--tray); font-size: 12px; border: 1px solid #ffae2b38; min-height: 38px; cursor: pointer; }
 .pill[aria-pressed=true] { color: #221506; background: var(--marigold); }

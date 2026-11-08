@@ -2,6 +2,10 @@
   "$schema": "https://openapi.vercel.sh/vercel.json",
   "rewrites": [
     {
+      "source": "/namma-vedis/credits",
+      "destination": "/namma-vedis/credits.html"
+    },
+    {
       "source": "/namma-vedis",
       "destination": "/namma-vedis/index.html"
     }
