@@ -17,6 +17,7 @@
 <script type="importmap">
 { "imports": { "three": "/namma-vedis/three.module.min.js" } }
 </script>
+<script async src="/namma-vedis/xr/xr.js" data-preload-chunks="slam"></script>
 </head>
 <body>
 
@@ -27,7 +28,7 @@
   </div>
   <div id="ui" hidden>
     <div id="top">
-      <button id="mode" type="button" title="Automatic sky/floor switching">Sky · Auto</button><button id="motionBtn" class="pill" type="button" hidden>Enable motion</button>
+      <button id="mode" type="button" title="Automatic sky/floor switching">Sky · AR</button><button id="motionBtn" class="pill" type="button" hidden>Enable motion</button>
       <button id="surfaceBtn" type="button" hidden>On the floor</button>
       <div class="spacer"></div>
       <button class="round" id="hideBtn" type="button" aria-label="Hide controls for recording">
@@ -38,7 +39,7 @@
         <svg viewBox="0 0 24 24" id="icoMuted" hidden><path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M17 9l5 6M22 9l-5 6"/></svg>
       </button>
     </div>
-    <div id="extraTray"><button class="pill" id="royalBtn" type="button" aria-pressed="false">Grand shows ✦</button><button class="pill" id="wishBtn" type="button">Happy Diwali in the sky</button></div><div id="picker" role="toolbar" aria-label="Firecrackers"></div>
+    <div id="extraTray"><button class="pill" id="royalBtn" type="button" aria-pressed="false">Grand shows ✦</button><button class="pill" id="wishBtn" type="button">Happy Diwali in the sky</button></div><div id="effectStatus" role="status" hidden></div><div id="trackingStatus" role="status" hidden>Move your phone slowly to find the floor.</div><div id="picker" role="toolbar" aria-label="Firecrackers"></div>
   </div>
   <button id="showBtn" class="round" aria-label="Show controls" hidden>⊕</button><div id="hint" role="status"></div>
 </div>
@@ -46,10 +47,10 @@
 <section id="start" aria-labelledby="title">
   <small>Happy Diwali</small>
   <span class="tamil-name" lang="ta">நம்ம வெடி</span><h1 id="title">Namma Vedi’s</h1>
-  <p id="lede">Your camera. Namma celebration. Tap the sky for fireworks; point down for floor crackers.</p>
+  <p id="lede">Your camera. Namma celebration. Scan your floor, place a cracker, and walk around the magic.</p>
   <button id="startBtn" type="button">Start camera</button>
   <p class="fine" id="note">Camera and motion permission are requested when you start. Nothing is recorded or uploaded.</p><button id="demoBtn" class="text-button" hidden>Try without camera</button>
-  <p id="credit">Namma Vedi’s · by Abishek<br><a href="https://pattasu-diwali.vercel.app/" target="_blank" rel="noopener">Original Pattasu experience by @ikevinadams</a></p>
+  <p id="credit">Namma Vedi’s · by Abishek<br><a href="https://pattasu-diwali.vercel.app/" target="_blank" rel="noopener">Original Pattasu experience by @ikevinadams</a><br><a href="/namma-vedis/xr/LICENSE" target="_blank" rel="noopener">AR: 8th Wall · © 2026 Niantic Spatial · License &amp; warranty disclaimer</a></p>
 </section>
 <div id="bootError" hidden>This needs a connection the first time it loads. Check yours and reload.</div>
 

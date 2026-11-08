@@ -2,6 +2,14 @@
 
 import * as THREE from 'three';
 import { hasOrientation, deviceQuaternion, modeForPitch } from './orientation.mjs';
+import { snapshotView, groundIntersection, applyWorldPose, PlacementGuide } from './world-space.mjs';
+import { waitForWorldEngine, createWorldTracking } from './world-tracking.mjs';
+import { AtomSequence, playAtomAftertone } from './atom-aftertone.mjs';
+const atomSequence = new AtomSequence();
+let worldTracking = null, trackingStarting = false;
+const placementGuide = new PlacementGuide();
+let tableSurface = false;
+let cameraFeedRenderer = null, trackedCameraTexture = null, feedGeometry = null;
 THREE.ColorManagement.enabled = false; // everything here is hand-graded, so it goes to the screen as written
 
 const $ = (id) => document.getElementById(id);
@@ -22,7 +30,8 @@ const C = {
 const PAIRS = [[C.gold, C.red], [C.pink, C.silver], [C.green, C.gold], [C.blue, C.silver], [C.red, C.gold], [C.violet, C.gold], [C.silver, C.red]];
 
 /* ---------- Renderer ---------- */
-const stage = $('stage'), sceneEl = $('scene'), video = $('cam'), glCanvas = $('gl');
+const stage = $('stage'), sceneEl = $('scene'), glCanvas = $('gl');
+let video = $('cam');
 let renderer;
 try {
   renderer = new THREE.WebGLRenderer({ canvas: glCanvas, antialias: false, alpha: false, powerPreference: 'high-performance', preserveDrawingBuffer: false });
@@ -37,6 +46,7 @@ try {
 renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
 renderer.setClearColor(0x000000, 1);
 const scene = new THREE.Scene();
+const world = new THREE.Group(); scene.add(world);
 const camera = new THREE.PerspectiveCamera(70, 1, 0.05, 900);
 scene.add(camera);
 
@@ -88,7 +98,7 @@ const skyLight = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.ShaderM
     void main(){ vec3 c = uHas > .5 ? room() * uC * 1.5 : uC * .1; gl_FragColor = vec4(c, 0.0); }`,
 }));
 skyLight.frustumCulled = false; skyLight.renderOrder = 0; skyLight.visible = false;
-scene.add(skyLight);
+world.add(skyLight);
 let sceneLight = 0;
 const sceneLightC = new THREE.Vector3();
 function lightScene(c, amt) {
@@ -113,26 +123,26 @@ for (let i = 0; i < 8; i++) {
       }`,
   }));
   m.frustumCulled = false; m.renderOrder = 1; m.visible = false;
-  scene.add(m);
+  world.add(m);
   pools.push(m);
 }
 let poolN = 0;
-function floorGlow(x, z, c, intensity, radius) {
+function floorGlow(x, z, c, intensity, radius, groundY = floorY) {
   if (poolN >= pools.length) return;
   const m = pools[poolN++];
-  m.position.set(x, floorY + .004, z);
+  m.position.set(x, groundY + .004, z);
   m.scale.setScalar(radius);
   m.material.uniforms.uC.value.setRGB(c[0] * intensity, c[1] * intensity, c[2] * intensity);
   m.visible = true;
 }
 const pulses = [];
-const floorPulse = (x, z, c, intensity, radius, decay) => pulses.push({ x, z, c, i: intensity, r: radius, d: decay });
+const floorPulse = (x, z, c, intensity, radius, decay, groundY = floorY) => pulses.push({ x, z, c, i: intensity, r: radius, d: decay, groundY });
 
 /* ---------- Sparks: stretched along their motion, the way a camera shutter records them ---------- */
 const N = 10000;
 const F = { TRAIL: 1, TWINKLE: 2, BOUNCE: 4, CRACKLE: 8, LATE: 16, SEG: 32 };
 const P = {};
-for (const k of ['x', 'y', 'z', 'vx', 'vy', 'vz', 'age', 'life', 'size', 'r', 'g', 'b', 'r2', 'g2', 'b2', 'drag', 'grav', 'tl', 'tt', 'str', 'glow']) P[k] = new Float32Array(N);
+for (const k of ['x', 'y', 'z', 'vx', 'vy', 'vz', 'age', 'life', 'size', 'r', 'g', 'b', 'r2', 'g2', 'b2', 'drag', 'grav', 'tl', 'tt', 'str', 'glow', 'groundY']) P[k] = new Float32Array(N);
 P.flag = new Uint8Array(N);
 let head = 0, aliveCount = 0;
 const outPos = new Float32Array(N * 3), outVel = new Float32Array(N * 3), outCol = new Float32Array(N * 4), outSize = new Float32Array(N * 3);
@@ -185,14 +195,14 @@ const sparkMat = new THREE.ShaderMaterial({
 });
 const sparks = new THREE.Mesh(sparkGeo, sparkMat);
 sparks.frustumCulled = false; sparks.renderOrder = 3;
-scene.add(sparks);
+world.add(sparks);
 
-function spawn(x, y, z, vx, vy, vz, life, size, c1, c2, drag, grav, flag = 0, tl = 0, str = .033, glow = 0) {
+function spawn(x, y, z, vx, vy, vz, life, size, c1, c2, drag, grav, flag = 0, tl = 0, str = .033, glow = 0, groundY = floorY) {
   const i = head; head = (head + 1) % N;
   P.x[i] = x; P.y[i] = y; P.z[i] = z; P.vx[i] = vx; P.vy[i] = vy; P.vz[i] = vz;
   P.age[i] = 0; P.life[i] = life; P.size[i] = size;
   P.r[i] = c1[0]; P.g[i] = c1[1]; P.b[i] = c1[2]; P.r2[i] = c2[0]; P.g2[i] = c2[1]; P.b2[i] = c2[2];
-  P.drag[i] = drag; P.grav[i] = grav; P.flag[i] = flag; P.tl[i] = tl; P.tt[i] = 0; P.str[i] = str; P.glow[i] = glow;
+  P.drag[i] = drag; P.grav[i] = grav; P.flag[i] = flag; P.tl[i] = tl; P.tt[i] = 0; P.str[i] = str; P.glow[i] = glow; P.groundY[i] = groundY;
   return i;
 }
 let quality = 1;
@@ -219,7 +229,7 @@ function updateSparks(dt) {
       P.vx[i] *= damp; P.vy[i] = P.vy[i] * damp - P.grav[i] * dt; P.vz[i] *= damp;
       P.x[i] += P.vx[i] * dt; P.y[i] += P.vy[i] * dt; P.z[i] += P.vz[i] * dt;
     }
-    if ((fl & F.BOUNCE) && P.y[i] < floorY) { P.y[i] = floorY; P.vy[i] *= -.32; P.vx[i] *= .55; P.vz[i] *= .55; }
+    if ((fl & F.BOUNCE) && P.y[i] < P.groundY[i]) { P.y[i] = P.groundY[i]; P.vy[i] *= -.32; P.vx[i] *= .55; P.vz[i] *= .55; }
     const k = P.age[i] / P.life[i];
     const r = P.r[i] + (P.r2[i] - P.r[i]) * k, g = P.g[i] + (P.g2[i] - P.g[i]) * k, b = P.b[i] + (P.b2[i] - P.b[i]) * k;
     // Stars burn steadily and then gutter out; loose sparks just fade.
@@ -246,7 +256,7 @@ function updateSparks(dt) {
 /* ---------- Smoke, and the paper a cracker leaves behind ---------- */
 const M = 1400;
 const S = {};
-for (const k of ['x', 'y', 'z', 'vx', 'vy', 'vz', 'age', 'life', 'size', 'grow', 'rot', 'spin', 'r', 'g', 'b', 'r2', 'g2', 'b2', 'a', 'drag', 'grav', 'wind', 'hard']) S[k] = new Float32Array(M);
+for (const k of ['x', 'y', 'z', 'vx', 'vy', 'vz', 'age', 'life', 'size', 'grow', 'rot', 'spin', 'r', 'g', 'b', 'r2', 'g2', 'b2', 'a', 'drag', 'grav', 'wind', 'hard', 'groundY']) S[k] = new Float32Array(M);
 let sHead = 0;
 const sPos = new Float32Array(M * 3), sCol = new Float32Array(M * 4), sSize = new Float32Array(M * 3);
 const smokeGeo = instanced(['iPos', sPos, 3], ['iCol', sCol, 4], ['iSize', sSize, 3]);
@@ -288,13 +298,13 @@ const smokeMat = new THREE.ShaderMaterial({
 });
 const smoke = new THREE.Mesh(smokeGeo, smokeMat);
 smoke.frustumCulled = false; smoke.renderOrder = 2;
-scene.add(smoke);
-function puff(x, y, z, vx, vy, vz, life, size, grow, lit, base, alpha, drag, grav, wind, hard = 0) {
+world.add(smoke);
+function puff(x, y, z, vx, vy, vz, life, size, grow, lit, base, alpha, drag, grav, wind, hard = 0, groundY = floorY) {
   const i = sHead; sHead = (sHead + 1) % M;
   S.x[i] = x; S.y[i] = y; S.z[i] = z; S.vx[i] = vx; S.vy[i] = vy; S.vz[i] = vz; S.age[i] = 0; S.life[i] = life; S.size[i] = size; S.grow[i] = grow;
   S.rot[i] = rand(0, TAU); S.spin[i] = rand(-.5, .5) * (hard ? 12 : 1);
   S.r[i] = lit[0]; S.g[i] = lit[1]; S.b[i] = lit[2]; S.r2[i] = base[0]; S.g2[i] = base[1]; S.b2[i] = base[2];
-  S.a[i] = alpha; S.drag[i] = drag; S.grav[i] = grav; S.wind[i] = wind; S.hard[i] = hard;
+  S.a[i] = alpha; S.drag[i] = drag; S.grav[i] = grav; S.wind[i] = wind; S.hard[i] = hard; S.groundY[i] = groundY;
 }
 function updateSmoke(dt) {
   let n = 0;
@@ -307,7 +317,7 @@ function updateSmoke(dt) {
     S.x[i] += (S.vx[i] + S.wind[i]) * dt; S.y[i] += S.vy[i] * dt; S.z[i] += (S.vz[i] + S.wind[i] * .4) * dt;
     const hard = S.hard[i] > .5;
     if (hard) {
-      if (S.y[i] <= floorY + .002) { S.y[i] = floorY + .002; S.vx[i] = S.vz[i] = S.vy[i] = 0; S.spin[i] = 0; S.grav[i] = 0; S.wind[i] = 0; }
+      if (S.y[i] <= S.groundY[i] + .002) { S.y[i] = S.groundY[i] + .002; S.vx[i] = S.vz[i] = S.vy[i] = 0; S.spin[i] = 0; S.grav[i] = 0; S.wind[i] = 0; }
       S.rot[i] += S.spin[i] * dt;
     } else {
       S.rot[i] += S.spin[i] * dt;
@@ -458,12 +468,17 @@ let W = 1, H = 1, dpr = 1;
 const tmp = new THREE.Vector3();
 function rayAt(cx, cy) { return new THREE.Vector3((cx / W) * 2 - 1, -(cy / H) * 2 + 1, .5).unproject(camera).sub(camera.position).normalize(); }
 function floorPoint(ray) {
-  let x, z;
-  if (ray.y < -.03) { const t = floorY / ray.y; x = ray.x * t; z = ray.z * t; }
-  else { const h = Math.hypot(ray.x, ray.z) || 1; x = ray.x / h * 7; z = ray.z / h * 7; }
-  const d = Math.hypot(x, z);
-  if (d > 8) { x *= 8 / d; z *= 8 / d; }
-  return new THREE.Vector3(x, floorY, z);
+  return groundIntersection(THREE, camera.position, ray, floorY);
+}
+function placementPoint(cx, cy) {
+  if (worldTracking?.active) {
+    if (!worldTracking.ready) return null;
+    const hit = worldTracking.hit(cx / W, cy / H, tableSurface);
+    if (hit && [hit.x, hit.y, hit.z].every(Number.isFinite) && hit.y < camera.position.y - .05) {
+      return new THREE.Vector3(hit.x, hit.y, hit.z);
+    }
+  }
+  return floorPoint(rayAt(cx, cy));
 }
 function panFor(p) { tmp.copy(p).applyMatrix4(camera.matrixWorldInverse); return clamp(tmp.x / Math.max(1, tmp.length()), -1, 1) * .85; }
 function randDir() { const u = Math.random() * 2 - 1, t = Math.random() * TAU, s = Math.sqrt(1 - u * u); return [Math.cos(t) * s, u, Math.sin(t) * s]; }
@@ -520,8 +535,9 @@ function crackling(p, silent) {
   if (!silent) sfx.crackle(90, panFor(p), delay + 1, 1.05);
 }
 // Every shell climbs to where you tapped before it breaks, so you see the tail and hear the tube first.
-function launch(target, burst, T = rand(.6, .78), silent = false) {
-  const start = new THREE.Vector3(target.x * .32, floorY, target.z * .32), pos = new THREE.Vector3(), last = start.clone();
+function launch(target, burst, T = rand(.6, .78), silent = false, view = VIEW()) {
+  const start = view.origin.clone().lerp(target, .32); start.y = view.groundY ?? floorY;
+  const pos = new THREE.Vector3(), last = start.clone();
   if (!silent) sfx.lift(panFor(target));
   let t = 0;
   emitters.push({ update(dt) {
@@ -555,7 +571,8 @@ function rocketBreak(p) {
   }
 }
 function rocket(target) {
-  const start = new THREE.Vector3(target.x * .2, floorY, target.z * .2), pos = new THREE.Vector3(), last = start.clone();
+  const start = camera.position.clone().lerp(target, .2); start.y = floorY;
+  const pos = new THREE.Vector3(), last = start.clone();
   const { r } = VIEW(), bow = target.length() * rand(.02, .045) * (Math.random() < .5 ? -1 : 1), wob = rand(0, TAU);
   const burn = rand(.95, 1.15), T = burn + rand(.32, .46), ember = [.8, .3, .06];
   sfx.fizz(burn + .2, panFor(target));
@@ -578,27 +595,24 @@ function rocket(target) {
     return true;
   } });
 }
-const VIEW = () => {
-  const f = camera.getWorldDirection(new THREE.Vector3()).clone();
-  return { f, r: new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion), u: new THREE.Vector3(0, 1, 0).applyQuaternion(camera.quaternion) };
-};
+const VIEW = () => ({ ...snapshotView(THREE, camera), groundY: floorY });
 function twelveShot(target) {
-  const dist = target.length(), { r } = VIEW();
-  const dir = target.clone().normalize();
+  const view = VIEW(), { r, origin } = view, dist = target.distanceTo(origin);
+  const dir = target.clone().sub(origin).normalize();
   let t = 0, n = 0;
   emitters.push({ update(dt) {
     t += dt;
     while (n < 12 && n * .24 <= t) {
       const off = ((n % 2 ? 1 : -1) * (6 - Math.abs(n - 6))) * .05 + rand(-.015, .015);
-      const d = dir.clone().addScaledVector(r, off).normalize().multiplyScalar(dist * rand(.88, 1.08));
-      launch(d, (q, s) => peony(q, s, .55), rand(.42, .56));
+      const d = dir.clone().addScaledVector(r, off).normalize().multiplyScalar(dist * rand(.88, 1.08)).add(origin);
+      launch(d, (q, s) => peony(q, s, .55), rand(.42, .56), false, view);
       n++;
     }
     return n < 12;
   } });
 }
 function finale() {
-  const { f, r, u } = VIEW();
+  const view = VIEW(), { f, r, u, origin } = view;
   const plan = [];
   for (let i = 0; i < 26; i++) plan.push({ at: i * .26 + rand(0, .16), fn: pick([peony, chrysanthemum, goldenRain, crackling]) });
   for (let i = 0; i < 7; i++) plan.push({ at: 7.1 + rand(0, .4), fn: chrysanthemum });
@@ -607,8 +621,8 @@ function finale() {
   emitters.push({ finale: true, update(dt) {
     t += dt;
     while (n < plan.length && plan[n].at <= t) {
-      const d = f.clone().addScaledVector(r, rand(-.34, .34)).addScaledVector(u, rand(-.28, .5)).normalize().multiplyScalar(rand(100, 140));
-      launch(d, plan[n++].fn, rand(.45, .7));
+      const d = f.clone().addScaledVector(r, rand(-.34, .34)).addScaledVector(u, rand(-.28, .5)).normalize().multiplyScalar(rand(100, 140)).add(origin);
+      launch(d, plan[n++].fn, rand(.45, .7), false, view);
     }
     return n < plan.length;
   } });
@@ -661,21 +675,21 @@ const G = {
 };
 let ambLum = .4;
 const propLevel = (flame) => clamp(ambLum * 2.4 + flame, .2, 1.25);
-function contactShadow(x, z, radius, opacity) {
+function contactShadow(x, z, radius, opacity, groundY = floorY) {
   const mat = new THREE.MeshBasicMaterial({ map: TEX.shadow, transparent: true, opacity, depthWrite: false, depthTest: false, toneMapped: false });
   const m = new THREE.Mesh(G.plane, mat);
-  m.position.set(x, floorY + .003, z);
+  m.position.set(x, groundY + .003, z);
   m.scale.setScalar(radius);
   m.frustumCulled = false; m.renderOrder = 1;
-  scene.add(m);
+  world.add(m);
   return m;
 }
-function makeProp(geom, tex, x, y, z, shadowR) {
+function makeProp(geom, tex, x, y, z, shadowR, groundY) {
   const mat = new THREE.MeshBasicMaterial({ map: tex, toneMapped: false });
   const m = new THREE.Mesh(geom, mat);
-  m.position.set(x, floorY + y, z);
-  scene.add(m);
-  return { m, mat, shadow: contactShadow(x, z, shadowR, .55), lit(flame) { mat.color.setScalar(propLevel(flame)); } };
+  m.position.set(x, groundY + y, z);
+  world.add(m);
+  return { m, mat, shadow: contactShadow(x, z, shadowR, .55, groundY), lit(flame) { mat.color.setScalar(propLevel(flame)); } };
 }
 const dropProp = (p) => { p.mat.dispose(); p.m.removeFromParent(); p.shadow.material.dispose(); p.shadow.removeFromParent(); };
 function groundSmoke(x, y, z, c, n, size, rise) {
@@ -683,10 +697,10 @@ function groundSmoke(x, y, z, c, n, size, rise) {
 }
 
 const PAPER = [.72, .08, .07], PAPER2 = [.85, .62, .28];
-function scatterPaper(x, y, z, n, speed, life) {
+function scatterPaper(x, y, z, n, speed, life, groundY) {
   for (let i = 0; i < n; i++) {
     const a = rand(0, TAU), v = rand(.15, .6) * speed, c = Math.random() < .86 ? PAPER : PAPER2;
-    puff(x, y, z, Math.cos(a) * v, rand(.6, 1.2) * speed, Math.sin(a) * v, life * rand(.75, 1.1), rand(.005, .01), 0, c, c, 1, 2.6, 4.6, .05, 1);
+    puff(x, y, z, Math.cos(a) * v, rand(.6, 1.2) * speed, Math.sin(a) * v, life * rand(.75, 1.1), rand(.005, .01), 0, c, c, 1, 2.6, 4.6, .05, 1, groundY);
   }
 }
 // One routine, scaled by how much powder is packed inside.
@@ -696,32 +710,43 @@ const BOMBS = {
   lakshmi: { geo: G.lakshmi, tex: TEX.lakshmi, h: .07, shadow: .04, fuse: .9, power: .32 },
 };
 function bomb(p, b) {
-  const { power, fuse, h } = b, prop = makeProp(b.geo, b.tex, p.x, h / 2, p.z, b.shadow), pan = panFor(p), R = .35 + .65 * power;
+  const groundY = p.y;
+  const { power, fuse, h } = b, prop = makeProp(b.geo, b.tex, p.x, h / 2, p.z, b.shadow, groundY), pan = panFor(p), R = .35 + .65 * power;
   sfx.fuse(fuse, pan);
   let t = 0;
   emitters.push({ ground: true, update(dt) {
     t += dt;
     prop.lit(.05 + Math.random() * .08);
     if (t < fuse) {
-      for (let k = 0; k < 5; k++) spawn(p.x, floorY + h + .012, p.z, rand(-1, 1), rand(.5, 2), rand(-1, 1), rand(.08, .24), .008, C.white, C.amber, 1.5, 4, F.TWINKLE, 0, .03);
-      floorGlow(p.x, p.z, [1, .55, .2], .12 + Math.random() * .1, .4);
+      for (let k = 0; k < 5; k++) spawn(p.x, groundY + h + .012, p.z, rand(-1, 1), rand(.5, 2), rand(-1, 1), rand(.08, .24), .008, C.white, C.amber, 1.5, 4, F.TWINKLE, 0, .03, 0, groundY);
+      floorGlow(p.x, p.z, [1, .55, .2], .12 + Math.random() * .1, .4, groundY);
       return true;
     }
     dropProp(prop);
-    const c = { x: p.x, y: floorY + .18, z: p.z };
+    const c = { x: p.x, y: groundY + .18, z: p.z };
     glowAt(c, 3.2 * R, C.white, .12);
     glowAt(c, 2 * R, C.amber, .4);
-    floorPulse(p.x, p.z, [1, .85, .6], 3.4 * power, 6 * R, 3.2);
+    floorPulse(p.x, p.z, [1, .85, .6], 3.4 * power, 6 * R, 3.2, groundY);
     lightScene([1, .88, .68], power);
     if (power > .5) shake = (reduceMotion ? .2 : 1) * power;
     sfx.bomb(pan, power);
+    if (b === BOMBS.atom) {
+      atomSequence.burst();
+      $('effectStatus').textContent = 'Let it ring…';
+      playAtomAftertone(actx, master, () => {
+        atomSequence.finish();
+        $('effectStatus').hidden = true;
+        // A hold started during the tail must not turn into a surprise launch.
+        press = null;
+      });
+    }
     vibrate(power > .5 ? [90, 30, 140] : 40);
-    for (let k = 0; k < 340 * power; k++) { const d = randDir(), v = rand(3, 13) * R; spawn(c.x, c.y, c.z, d[0] * v, Math.abs(d[1]) * v, d[2] * v, rand(.3, .9), rand(.012, .022), C.gold, C.red, 1.8, 9.8, F.BOUNCE, 0, .03); }
-    if (power > .5) for (let k = 0; k < 120; k++) { const a = (k / 120) * TAU, v = 13 * R; spawn(c.x, floorY + .05, c.z, Math.cos(a) * v, 0, Math.sin(a) * v, .32, .03, C.white, C.amber, 4.4, 0, 0, 0, .02); }
+    for (let k = 0; k < 340 * power; k++) { const d = randDir(), v = rand(3, 13) * R; spawn(c.x, c.y, c.z, d[0] * v, Math.abs(d[1]) * v, d[2] * v, rand(.3, .9), rand(.012, .022), C.gold, C.red, 1.8, 9.8, F.BOUNCE, 0, .03, 0, groundY); }
+    if (power > .5) for (let k = 0; k < 120; k++) { const a = (k / 120) * TAU, v = 13 * R; spawn(c.x, groundY + .05, c.z, Math.cos(a) * v, 0, Math.sin(a) * v, .32, .03, C.white, C.amber, 4.4, 0, 0, 0, .02); }
     for (let k = 0; k < 42 * power; k++) { const a = rand(0, TAU), v = rand(.3, 1.9) * R; puff(c.x + Math.cos(a) * .1, c.y, c.z + Math.sin(a) * .1, Math.cos(a) * v, rand(.3, 1.8), Math.sin(a) * v, rand(2.4, 5), rand(.25, .55) * R, .5 * R, [.9, .6, .3], [.24, .23, .22], rand(.16, .3), 1.2, -.08, .1); }
     for (let k = 0; k < 20 * power; k++) puff(c.x + rand(-.12, .12), c.y, c.z + rand(-.12, .12), rand(-.25, .25), rand(1.2, 3.4), rand(-.25, .25), rand(2.2, 4.2), rand(.2, .42), .4, [1, .7, .4], [.26, .25, .24], rand(.18, .3), 1, -.12, .08);
-    scatterPaper(c.x, c.y, c.z, Math.ceil(46 * power), 2.6, 13);
-    const scorch = contactShadow(p.x, p.z, .7 * R, .75);
+    scatterPaper(c.x, c.y, c.z, Math.ceil(46 * power), 2.6, 13, groundY);
+    const scorch = contactShadow(p.x, p.z, .7 * R, .75, groundY);
     let st = 0;
     emitters.push({ update(d) { st += d; if (st > 9) { scorch.material.opacity = .75 * (1 - (st - 9) / 3); if (st > 12) { scorch.material.dispose(); scorch.removeFromParent(); return false; } } return true; } });
     return false;
@@ -733,24 +758,25 @@ const WALAS = {
   wala1000: { n: 260, length: 2, waves: 4, amp: .09, gap: [.012, .036], paper: 1 },
 };
 function wala(p, w) {
+  const groundY = p.y;
   const r = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion); r.y = 0; r.normalize();
   const f = new THREE.Vector3(-r.z, 0, r.x), n = w.n, pts = [], mat = new THREE.MeshBasicMaterial({ map: TEX.wala, toneMapped: false });
   const inst = new THREE.InstancedMesh(G.wala, mat, n), dummy = new THREE.Object3D(), pan = panFor(p);
-  const ahead = -(p.x * f.x + p.z * f.z), shift = Math.max(0, .6 + w.length / 2 - ahead); // keep the near end in front of the phone
+  const ahead = -((p.x - camera.position.x) * f.x + (p.z - camera.position.z) * f.z), shift = Math.max(0, .6 + w.length / 2 - ahead); // keep the near end in front of the phone
   for (let i = 0; i < n; i++) {
     const u = i / (n - 1), s = (u - .5) * w.length - shift, o = Math.sin(u * TAU * w.waves) * w.amp;
-    pts.push(new THREE.Vector3(p.x + f.x * s + r.x * o, floorY, p.z + f.z * s + r.z * o));
+    pts.push(new THREE.Vector3(p.x + f.x * s + r.x * o, groundY, p.z + f.z * s + r.z * o));
   }
   for (let i = 0; i < n; i++) {
     const a = pts[Math.max(0, i - 1)], b = pts[Math.min(n - 1, i + 1)];
-    dummy.position.set(pts[i].x, floorY + .009, pts[i].z);
+    dummy.position.set(pts[i].x, groundY + .009, pts[i].z);
     dummy.rotation.set(Math.PI / 2, 0, Math.atan2(a.x - b.x, b.z - a.z) + (i % 2 ? .95 : -.95));
     dummy.scale.setScalar(1);
     dummy.updateMatrix();
     inst.setMatrixAt(i, dummy.matrix);
   }
   inst.frustumCulled = false;
-  scene.add(inst);
+  world.add(inst);
   mat.color.setScalar(propLevel(0));
   let t = 0, i = 0, cursor = .35;
   const times = pts.map(() => { const at = cursor; cursor += Math.random() < .08 ? rand(.1, .22) : rand(w.gap[0], w.gap[1]); return at; });
@@ -759,17 +785,17 @@ function wala(p, w) {
     while (i < n && times[i] <= t) {
       const q = pts[i], big = i % 24 === 23; // every so often one packed heavier than the rest
       dummy.scale.setScalar(.0001);
-      dummy.position.set(q.x, floorY, q.z);
+      dummy.position.set(q.x, groundY, q.z);
       dummy.updateMatrix();
       inst.setMatrixAt(i, dummy.matrix);
       inst.instanceMatrix.needsUpdate = true;
       sfx.pop(pan + rand(-.1, .1), rand(0, .012), big ? 1.5 : rand(.65, 1));
-      glowAt({ x: q.x, y: floorY + .04, z: q.z }, big ? .6 : .34, C.white, .06);
-      floorPulse(q.x, q.z, [1, .72, .4], big ? 1.3 : .7, 1.1, 12);
+      glowAt({ x: q.x, y: groundY + .04, z: q.z }, big ? .6 : .34, C.white, .06);
+      floorPulse(q.x, q.z, [1, .72, .4], big ? 1.3 : .7, 1.1, 12, groundY);
       lightScene([1, .75, .45], big ? .16 : .07);
-      for (let k = 0; k < 14; k++) { const d = randDir(), v = rand(1.5, 4.6); spawn(q.x, floorY + .04, q.z, d[0] * v, Math.abs(d[1]) * v, d[2] * v, rand(.1, .3), .012, C.white, C.amber, 2.2, 7, F.BOUNCE, 0, .03); }
-      scatterPaper(q.x, floorY + .03, q.z, w.paper, 1.4, 11);
-      if (i % 3 === 0) groundSmoke(q.x, floorY + .06, q.z, [.5, .38, .24], 1, .1, .5);
+      for (let k = 0; k < 14; k++) { const d = randDir(), v = rand(1.5, 4.6); spawn(q.x, groundY + .04, q.z, d[0] * v, Math.abs(d[1]) * v, d[2] * v, rand(.1, .3), .012, C.white, C.amber, 2.2, 7, F.BOUNCE, 0, .03, 0, groundY); }
+      scatterPaper(q.x, groundY + .03, q.z, w.paper, 1.4, 11, groundY);
+      if (i % 3 === 0) groundSmoke(q.x, groundY + .06, q.z, [.5, .38, .24], 1, .1, .5);
       if (i % 6 === 0) vibrate(7);
       i++;
     }
@@ -817,6 +843,7 @@ function renderPicker() {
     b.addEventListener('click', () => {
       const keep = pickerEl.scrollLeft;
       selected[tray] = id;
+      placementGuide.select();
       renderPicker();
       pickerEl.scrollLeft = keep;
       ensureAudio();
@@ -841,17 +868,22 @@ function setMode(m) {
   renderPicker();
   pickerEl.scrollLeft = 0;
   vibrate(10);
-  if (playing && !uiHidden && !toldMode[m]) { toldMode[m] = true; hint(m === 'sky' ? 'Tap anywhere to burst it there.' : 'Surface found. Tap it to light a cracker.', 3600); }
+  if (playing && !uiHidden && !toldMode[m]) { toldMode[m] = true; hint(m === 'sky' ? 'Tap anywhere to burst it there.' : 'Aim at the floor and tap to place a cracker.', 3600); }
 }
 surfaceBtn.addEventListener('click', () => {
-  floorY = floorY === -FLOOR_H ? -TABLE_H : -FLOOR_H;
-  surfaceBtn.textContent = floorY === -FLOOR_H ? 'On the floor' : 'On a table';
+  tableSurface = !tableSurface;
+  floorY = worldTracking?.active ? (tableSurface ? camera.position.y - TABLE_H : 0) : -(tableSurface ? TABLE_H : FLOOR_H);
+  surfaceBtn.textContent = tableSurface ? 'On a table' : 'On the floor';
+  placementGuide.select();
 });
 
 function fireAt(cx, cy) {
+  if (atomSequence.busy) return false;
+  if (worldTracking?.active && !worldTracking.ready) return false;
   const ray = rayAt(cx, cy), id = selected[mode === 'sky' && royalOpen ? 'royal' : mode];
   if (mode === 'sky') {
-    const p = ray.clone().multiplyScalar(rand(100, 135));
+    placementGuide.place(); ring.visible = false; ring.material.opacity = 0;
+    const p = ray.clone().multiplyScalar(rand(100, 135)).add(camera.position);
     if (royalOpen) { royalShow(id); return; }
     if (id === 'rocket') rocket(p);
     else if (id === 'shot') launch(p, Math.random() < .5 ? peony : chrysanthemum);
@@ -862,7 +894,15 @@ function fireAt(cx, cy) {
     return;
   }
   if (emitters.filter((e) => e.ground).length >= 7) return;
-  const spot = floorPoint(ray);
+  const spot = placementPoint(cx, cy);
+  if (!spot) { hint("Move slowly and aim at a nearby surface.", 2500); return false; }
+  placementGuide.place();
+  ring.visible = false; ring.material.opacity = 0;
+  if (id === 'atom') {
+    atomSequence.begin();
+    $('effectStatus').hidden = false;
+    $('effectStatus').textContent = 'Atom bomb · fuse lit';
+  }
   if (BOMBS[id]) bomb(spot, BOMBS[id]);
   else wala(spot, WALAS[id]);
 }
@@ -879,14 +919,16 @@ const qT = new THREE.Quaternion(), qC = new THREE.Quaternion(), lookE = new THRE
 const look = { yaw: 0, pitch: .12 };
 let gyro = false, primed = false;
 function updateCamera(dt) {
-  if (playing && gyro && orient.ok) {
+  if (worldTracking?.active) {
+    // Position and rotation are supplied together for the current camera frame.
+  } else if (playing && gyro && orient.ok) {
     qT.copy(deviceQuaternion(THREE, orient, scrAngle()));
     if (!primed) { qC.copy(qT); primed = true; } else qC.slerp(qT, 1 - Math.exp(-dt * 26));
   } else {
     look.pitch = clamp(look.pitch, -1.25, 1.35);
     qC.setFromEuler(lookE.set(look.pitch, look.yaw, 0));
   }
-  camera.quaternion.copy(qC);
+  if (!worldTracking?.active) camera.quaternion.copy(qC);
   camera.updateMatrixWorld();
   camera.getWorldDirection(fwd);
   const pitch = Math.asin(clamp(fwd.y, -1, 1));
@@ -905,7 +947,7 @@ function updateFov() {
     v = 2 * Math.atan((H / 2) / (f * s));
     shared.uCov.value.set(W / (vw * s), H / (vh * s));
   } else v = clamp(2 * Math.atan(Math.tan(36 * DEG) / Math.min(aspect, 1)), 50 * DEG, 78 * DEG);
-  camera.fov = v / DEG; camera.aspect = aspect; camera.updateProjectionMatrix();
+  if (!worldTracking?.active) { camera.fov = v / DEG; camera.aspect = aspect; camera.updateProjectionMatrix(); }
   sparkMat.uniforms.uScale.value = (H * dpr / 2) / Math.tan(v / 2);
   sparkMat.uniforms.uMin.value = 1.1 * dpr;
 }
@@ -916,27 +958,73 @@ function resize() {
   renderer.setSize(W, H, false);
   shared.uRes.value.set(W * dpr, H * dpr);
   updateFov();
+  worldTracking?.resize();
 }
 addEventListener('resize', resize);
 addEventListener('orientationchange', () => setTimeout(resize, 250));
 video.addEventListener('loadedmetadata', updateFov);
 video.addEventListener('resize', updateFov);
 
-async function startCamera() {
-  if (!window.isSecureContext || !navigator.mediaDevices) throw new Error('blocked');
-  await attachFeed(await navigator.mediaDevices.getUserMedia({ video: { facingMode: { ideal: 'environment' }, width: { ideal: 1920 }, height: { ideal: 1080 } }, audio: false }));
-}
-async function attachFeed(stream) {
-  video.srcObject = stream;
-  try { await video.play(); } catch (e) { /* inline muted video normally plays */ }
+function attachTrackedFeed(feedVideo) {
+  video = feedVideo;
+  shared.uVideo.value?.dispose();
   const vt = new THREE.VideoTexture(video);
   vt.colorSpace = THREE.NoColorSpace; vt.minFilter = THREE.LinearFilter; vt.magFilter = THREE.LinearFilter; vt.generateMipmaps = false;
-  shared.uVideo.value = vt;
-  shared.uHas.value = 1;
-  camOn = true;
-  night.visible = false;
-  backdrop.visible = true;
+  shared.uVideo.value = vt; shared.uHas.value = 1;
+  camOn = true; night.visible = false; backdrop.visible = true;
   updateFov();
+}
+function trackingState(ready) {
+  $('trackingStatus').hidden = ready || !worldTracking?.active;
+  $('trackingStatus').textContent = ready ? '' : 'Move slowly over a well-lit, textured floor to find your space.';
+  if (!ready) { ring.visible = false; ring.material.opacity = 0; }
+  updateModeLabel();
+}
+async function startWorldCamera() {
+  trackingStarting = true;
+  const XR8 = await waitForWorldEngine();
+  floorY = 0;
+  worldTracking = createWorldTracking({ XR8, canvas: glCanvas, webgl2: renderer.capabilities.isWebGL2,
+    onContext(context) {
+      // XR8 wraps WebGL state. Render through the same wrapped context, as its
+      // official Three.js integration does, instead of bypassing that state.
+      renderer.dispose();
+      renderer = new THREE.WebGLRenderer({ canvas: glCanvas, context, antialias: false, alpha: false });
+      renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
+      renderer.setClearColor(0x000000, 1);
+      resize();
+    },
+    onGeometry(data) {
+      if (!data) return;
+      feedGeometry = { ...feedGeometry, ...data };
+      const { GLctx, videoWidth, videoHeight } = feedGeometry;
+      if (!GLctx || !videoWidth || !videoHeight) return;
+      cameraFeedRenderer?.destroy();
+      cameraFeedRenderer = XR8.GlTextureRenderer.create({ GLctx, toTexture: { width: glCanvas.width, height: glCanvas.height }, flipY: false });
+    },
+    onVideo: attachTrackedFeed,
+    onPose(reality) {
+      const valid = applyWorldPose(camera, reality);
+      if (valid) {
+        if (reality.realityTexture && cameraFeedRenderer) {
+          if (!trackedCameraTexture) { trackedCameraTexture = new THREE.Texture(); trackedCameraTexture.colorSpace = THREE.NoColorSpace; }
+          const texture = cameraFeedRenderer.render({ renderTexture: reality.realityTexture,
+            viewport: XR8.GlTextureRenderer.fillTextureViewport(feedGeometry.videoWidth, feedGeometry.videoHeight, glCanvas.width, glCanvas.height) });
+          renderer.properties.get(trackedCameraTexture).__webglTexture = texture;
+          shared.uVideo.value = trackedCameraTexture;
+          shared.uCov.value.set(1, 1); // XR8 has already cropped/rotated this exact tracked frame.
+        }
+        sparkMat.uniforms.uScale.value = H * dpr * camera.projectionMatrix.elements[5] / 2;
+        sparkMat.uniforms.uMin.value = 1.1 * dpr;
+      }
+      return valid;
+    },
+    onFrame() { renderer.resetState(); step(performance.now()); },
+    onState: trackingState,
+    onError() { trackingState(false); hint('Tracking paused. Keep the floor in view or reload to start a new session.', 6000); },
+  });
+  await worldTracking.start();
+  trackingStarting = false;
 }
 // Sparks are light, so they vanish against a bright view. Dim the feed to suit, like stopping a camera down.
 const lumC = document.createElement('canvas'); lumC.width = lumC.height = 16;
@@ -979,14 +1067,14 @@ stage.addEventListener('pointerdown', (e) => {
   }
   press = { id: e.pointerId, x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY, dragged: false, t: 0, fired: false, mouse: e.pointerType === 'mouse' };
   try { stage.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
-  if (gyro) { fireAt(e.clientX, e.clientY); press.fired = true; hintEl.classList.remove('show'); }
+  if (worldTracking?.active || gyro) { fireAt(e.clientX, e.clientY); press.fired = true; hintEl.classList.remove('show'); }
 });
 stage.addEventListener('pointermove', (e) => {
   if (!press || e.pointerId !== press.id) return;
   const dx = e.clientX - press.x, dy = e.clientY - press.y;
   press.x = e.clientX; press.y = e.clientY;
   if (Math.hypot(e.clientX - press.sx, e.clientY - press.sy) > 8) press.dragged = true;
-  if (!gyro && press.dragged) {
+  if (!worldTracking?.active && !gyro && press.dragged) {
     const k = (camera.fov * DEG) / H, s = press.mouse ? -1 : 1;
     look.yaw += dx * k * s; look.pitch += dy * k * s;
   }
@@ -1001,7 +1089,7 @@ stage.addEventListener('pointerup', endPress);
 stage.addEventListener('pointercancel', endPress);
 stage.addEventListener('contextmenu', (e) => e.preventDefault());
 function holdRepeat(dt) {
-  if (!press || mode !== 'sky' || royalOpen || ['finale', 'twelve'].includes(selected.sky) || (!gyro && press.dragged)) return;
+  if (atomSequence.busy || !press || mode !== 'sky' || royalOpen || ['finale', 'twelve'].includes(selected.sky) || (!gyro && press.dragged)) return;
   press.t += dt;
   if (press.t >= REPEAT) { press.t = 0; press.fired = true; fireAt(press.x, press.y); }
 }
@@ -1016,6 +1104,7 @@ $('showBtn').addEventListener('click', () => toggleUi(false));
 
 // Silence the moment the page isn't on screen.
 document.addEventListener('visibilitychange', () => {
+  if (document.hidden) worldTracking?.pause(); else worldTracking?.resume();
   if (!actx) return;
   if (document.hidden) actx.suspend(); else if (playing) actx.resume();
 });
@@ -1026,8 +1115,12 @@ async function requestMotionAccess() {
   try { return await DeviceOrientationEvent.requestPermission(); } catch { return 'denied'; }
 }
 function updateModeLabel() {
+  if (worldTracking?.active) {
+    modeEl.textContent = (mode === 'sky' ? 'Sky' : 'Floor') + (worldTracking.ready ? ' · AR' : ' · Scanning');
+    $('motionBtn').hidden = true; return;
+  }
   const auto = gyro && orient.ok;
-  modeEl.textContent = (mode === 'sky' ? 'Sky' : 'Surface found') + (auto ? ' · Auto' : gyro ? ' · Waiting for motion' : ' · Manual');
+  modeEl.textContent = (mode === 'sky' ? 'Sky' : 'Floor') + (auto ? ' · Auto' : gyro ? ' · Waiting for motion' : ' · Manual');
   $('motionBtn').hidden = auto;
   $('motionBtn').textContent = gyro ? 'Motion help' : 'Enable motion';
 }
@@ -1039,13 +1132,15 @@ async function beginExperience(useCamera = true) {
   // first sensor event is delayed; never permanently disable auto after 400ms.
   const motionPromise = requestMotionAccess();
   try {
-    if (useCamera) await startCamera();
+    if (useCamera) await startWorldCamera();
   } catch (error) {
+    worldTracking?.stop(); worldTracking = null; trackingStarting = false;
+    renderer.resetState(); floorY = -FLOOR_H; camera.position.set(0, 0, 0);
     const message = error?.name === 'NotAllowedError'
       ? 'Allow camera access in Safari or Chrome, then tap Start camera again.'
       : error?.name === 'NotFoundError'
         ? 'No camera was found. Open this page on your phone to use the live view.'
-        : 'The camera could not start. Close other camera apps and try again in Safari or Chrome.';
+        : (error?.message || 'AR could not start. Close other camera apps and retry in Safari or Chrome.');
     $('note').textContent = message;
     $('note').hidden = false;
     $('demoBtn').hidden = false;
@@ -1057,11 +1152,14 @@ async function beginExperience(useCamera = true) {
   primed = false;
   look.yaw = 0; look.pitch = .12;
   playing = true; distantT = 2;
+  P.life.fill(0); S.life.fill(0); emitters.length = 0; pulses.length = 0;
+  placementGuide.select();
+  if (worldTracking?.active) trackingState(worldTracking.ready);
   $('start').hidden = true; $('ui').hidden = false;
   renderPicker(); applyMute(); updateModeLabel();
   ensureAudio();
   try { if (navigator.wakeLock) await navigator.wakeLock.request('screen'); } catch {}
-  hint(gyro ? 'Point down for floor crackers. Lift your phone for the sky. Tap to light it up.' : 'Allow motion for automatic sky/floor switching. Tap Enable motion above.', 6000);
+  hint(worldTracking?.active ? 'Scan the floor slowly. Tap to place; select a cracker again for a new ring.' : 'Demo: drag to look around, then tap to light a cracker.', 6000);
   if (wishName) queueSkyWish(1, `For ${wishName}`);
 }
 $('startBtn').addEventListener('click', () => beginExperience(true));
@@ -1071,10 +1169,11 @@ $('motionBtn').addEventListener('click', async () => {
   hint(gyro ? 'Move your phone. Sky and floor switch automatically as motion arrives.' : 'Motion is blocked. Enable Motion & Orientation Access in Safari settings, then reload.', 6500);
 });
 modeEl.addEventListener('click', () => {
-  if (gyro && orient.ok) { hint('Automatic: point down for the floor, lift up for the sky.', 3500); return; }
+  if (worldTracking?.active || (gyro && orient.ok)) { hint('Automatic: point down for the floor, lift up for the sky.', 3500); return; }
   look.pitch = mode === 'sky' ? -.75 : .12;
 });
 addEventListener('pagehide', () => {
+  worldTracking?.stop();
   const feed = video.srcObject;
   if (feed && typeof feed.getTracks === 'function') feed.getTracks().forEach(track => track.stop());
   if (actx) actx.suspend();
@@ -1093,15 +1192,16 @@ let wishFrom = (wishParams.get('from') || 'Abishek').slice(0, 24);
 let wishMessage = (wishParams.get('wish') || '').slice(0, 100);
 let activeLettering = null;
 function queueSkyWish(delay = 0, title = 'Happy Diwali') {
+  const view = VIEW();
   let elapsed = 0;
   emitters.push({ update(dt) {
     elapsed += dt;
     if (elapsed < delay) return true;
-    writeSky(title);
+    writeSky(title, view);
     return false;
   } });
 }
-function writeSky(title = 'Happy Diwali') {
+function writeSky(title = 'Happy Diwali', view = VIEW()) {
   if (activeLettering) activeLettering.cancel();
   const glyph = document.createElement('canvas'); glyph.width = 1024; glyph.height = 180;
   const x = glyph.getContext('2d');
@@ -1110,9 +1210,9 @@ function writeSky(title = 'Happy Diwali') {
   while (x.measureText(title).width > 940 && fontSize > 30) { fontSize -= 2; x.font = `${fontSize}px "Yatra One", Georgia, serif`; }
   x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillStyle = '#fff'; x.fillText(title, 512, 90);
   const pixels = x.getImageData(0, 0, 1024, 180).data;
-  const { f, r, u } = VIEW(), distance = 100;
-  const center = f.clone().multiplyScalar(distance).addScaledVector(u, 5);
-  const worldWidth = 2 * distance * Math.tan(camera.fov * DEG / 2) * camera.aspect * .84;
+  const { f, r, u, origin } = view, distance = 100;
+  const center = f.clone().multiplyScalar(distance).addScaledVector(u, 5).add(origin);
+  const worldWidth = 2 * distance * Math.tan(view.fov * DEG / 2) * view.aspect * .84;
   const coordinates = [];
   for (let y = 0; y < 180; y += 4) for (let xx = 0; xx < 1024; xx += 4) {
     if (pixels[(y * 1024 + xx) * 4 + 3] > 110) {
@@ -1128,7 +1228,7 @@ function writeSky(title = 'Happy Diwali') {
   d.fillStyle = glow; d.fillRect(0, 0, 32, 32);
   const texture = new THREE.CanvasTexture(dot);
   const mat = new THREE.PointsMaterial({ color: 0xffd295, size: worldWidth / 250, map: texture, transparent: true, opacity: 0, depthTest: false, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false });
-  const lettering = new THREE.Points(geo, mat); lettering.renderOrder = 9; lettering.frustumCulled = false; scene.add(lettering);
+  const lettering = new THREE.Points(geo, mat); lettering.renderOrder = 9; lettering.frustumCulled = false; world.add(lettering);
   let t = 0, dead = false;
   const cancel = () => { if (dead) return; dead = true; lettering.removeFromParent(); geo.dispose(); mat.dispose(); texture.dispose(); if (activeLettering?.cancel === cancel) activeLettering = null; };
   activeLettering = { cancel };
@@ -1158,19 +1258,19 @@ function diamondBurst(p, silent) {
 }
 function royalShow(kind) {
   if (emitters.some(e => e.finale)) { hint('Let this grand show finish its moment.', 2300); return; }
-  const { f, r, u } = VIEW(), plan = [], count = reduceMotion ? 16 : kind === 'hukum' ? 42 : 36;
+  const view = VIEW(), { f, r, u, origin } = view, plan = [], count = reduceMotion ? 16 : kind === 'hukum' ? 42 : 36;
   for (let i = 0; i < count; i++) {
     const x = kind === 'hukum' ? ((i % 3) - 1) * .28 : kind === 'thangam' ? ((i % 6) / 5 - .5) * .9 : rand(-.4, .4);
     const y = kind === 'hukum' ? .08 + (Math.floor(i / 3) % 3) * .15 : kind === 'thangam' ? .15 + Math.floor(i / 6) * .025 : rand(-.12, .4);
-    const p = f.clone().addScaledVector(r, x).addScaledVector(u, y).normalize().multiplyScalar(rand(115, 145));
+    const p = f.clone().addScaledVector(r, x).addScaledVector(u, y).normalize().multiplyScalar(rand(115, 145)).add(origin);
     const fn = kind === 'thangam' ? goldenRain : kind === 'diamond' ? diamondBurst : (q, silent) => chrysanthemum(q, silent, 1.2);
     plan.push({ at: i * .19, p, fn });
   }
   let elapsed = 0, n = 0, written = false;
   emitters.push({ finale: true, update(dt) {
     elapsed += dt;
-    while (n < plan.length && plan[n].at <= elapsed) { const shot = plan[n++]; launch(shot.p, shot.fn, .65); }
-    if (!written && elapsed > 6) { written = true; writeSky('Happy Diwali'); }
+    while (n < plan.length && plan[n].at <= elapsed) { const shot = plan[n++]; launch(shot.p, shot.fn, .65, false, view); }
+    if (!written && elapsed > 6) { written = true; writeSky('Happy Diwali', view); }
     return elapsed < 14;
   } });
 }
@@ -1180,20 +1280,25 @@ $('royalBtn').addEventListener('click', () => {
   $('royalBtn').textContent = royalOpen ? 'Classic crackers' : 'Grand shows ✦';
   renderPicker();
 });
-$('wishBtn').addEventListener('click', () => { if (playing) writeSky('Happy Diwali'); });
+$('wishBtn').addEventListener('click', () => {
+  if (!playing || atomSequence.busy || (worldTracking?.active && !worldTracking.ready)) return;
+  placementGuide.place(); ring.visible = false; ring.material.opacity = 0;
+  writeSky('Happy Diwali');
+});
 
 
 /* ---------- Surface ring ---------- */
 const ring = new THREE.Mesh(new THREE.RingGeometry(.3, .307, 72).rotateX(-Math.PI / 2), new THREE.MeshBasicMaterial({ color: 0xffae2b, transparent: true, opacity: 0, side: THREE.DoubleSide, depthTest: false, depthWrite: false, toneMapped: false }));
 ring.frustumCulled = false; ring.renderOrder = 4;
-scene.add(ring);
+world.add(ring);
 function updateRing(time) {
-  const target = playing && mode === 'ground' && !uiHidden ? .6 : 0;
-  ring.material.opacity += (target - ring.material.opacity) * .18;
-  ring.visible = ring.material.opacity > .01;
-  if (!ring.visible) return;
-  ring.position.copy(floorPoint(fwd));
-  ring.position.y = floorY + .005;
+  const eligible = !atomSequence.busy && placementGuide.armed && playing && mode === 'ground' && !uiHidden && (!worldTracking?.active || worldTracking.ready);
+  const spot = eligible ? placementPoint(W / 2, H / 2) : null;
+  ring.visible = placementGuide.visible({ playing, ground: mode === 'ground', hidden: uiHidden,
+    ready: !worldTracking?.active || worldTracking.ready, hasSurface: Boolean(spot) });
+  if (!ring.visible) { ring.material.opacity = 0; return; }
+  ring.material.opacity = .6;
+  ring.position.copy(spot); ring.position.y += .005;
   ring.scale.setScalar(1 + Math.sin(time * 3.2) * .06);
 }
 
@@ -1214,21 +1319,29 @@ function adaptQuality(rawDt, dt) {
   if (frameEma > 25) { quality = .6; resize(); }
 }
 function step(now) {
-  const raw = Math.max(0, (now - last) / 1000), dt = Math.min(.05, raw);
+  const raw = Math.max(0, (now - last) / 1000);
+  const trackingLost = playing && worldTracking?.active && !worldTracking.ready;
+  const dt = trackingLost ? 0 : Math.min(.05, raw);
+  world.visible = !trackingLost;
   last = now;
   const time = now / 1000;
+  if (trackingLost) {
+    updateCamera(0); autoDim(Math.min(.05, raw));
+    renderer.render(scene, camera);
+    return;
+  }
   if (!playing) { look.yaw = Math.sin(time * .1) * .04; look.pitch = .14; attract(dt); }
   updateCamera(dt);
   poolN = 0;
   if (playing) {
     holdRepeat(dt); autoDim(dt); adaptQuality(raw, dt);
     distantT -= dt;
-    if (distantT <= 0) { distantT = rand(2.5, 8); sfx.distant(); }
+    if (distantT <= 0 && !atomSequence.busy) { distantT = rand(2.5, 8); sfx.distant(); }
   }
   for (let i = emitters.length - 1; i >= 0; i--) if (!emitters[i].update(dt)) emitters.splice(i, 1);
   for (let i = pulses.length - 1; i >= 0; i--) {
     const f = pulses[i];
-    floorGlow(f.x, f.z, f.c, f.i, f.r);
+    floorGlow(f.x, f.z, f.c, f.i, f.r, f.groundY);
     f.i -= f.i * f.d * dt + dt * .3;
     if (f.i <= .02) pulses.splice(i, 1);
   }
@@ -1241,13 +1354,17 @@ function step(now) {
     skyLight.material.uniforms.uC.value.setRGB(sceneLightC.x * sceneLight, sceneLightC.y * sceneLight, sceneLightC.z * sceneLight);
     sceneLight *= Math.exp(-dt * 7);
   } else skyLight.visible = false;
-  if (shake > 0) {
+  if (worldTracking?.active) { shake = 0; sceneEl.style.transform = ''; }
+  else if (shake > 0) {
     shake = Math.max(0, shake - dt * 2.4);
     sceneEl.style.transform = shake > 0 ? `translate(${rand(-9, 9) * shake}px, ${rand(-9, 9) * shake}px) scale(1.03)` : '';
   }
   renderer.render(scene, camera);
 }
-function frame(now) { requestAnimationFrame(frame); step(now); }
+function frame(now) {
+  requestAnimationFrame(frame);
+  if (!trackingStarting && !worldTracking?.active) step(now);
+}
 
 resize();
 renderPicker();

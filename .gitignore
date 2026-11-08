@@ -39,3 +39,6 @@ yarn-error.log*
 # typescript
 *.tsbuildinfo
 next-env.d.ts
+
+# Copied unchanged from the pinned npm AR runtime during build/dev.
+/public/namma-vedis/xr/

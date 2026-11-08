@@ -89,3 +89,6 @@ button:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
 #motionBtn { font-size: 11px; }
 @media(max-width:420px) { #mode { font-size: 11px; padding: 8px; } #top { gap: 5px; } #motionBtn { padding: 7px 8px; } #extraTray .pill { font-size: 11px; } }
 @media(max-height:480px) { #start { padding-top: 40px; padding-bottom: 60px; } #start h1 { font-size: 36px; } #start p { font-size: 13px; margin-bottom: 12px; } .tamil-name { font-size: 12px; margin: 3px 0 5px; } #startBtn { padding: 10px; } #start #credit { bottom: 9px; } #start .fine { margin-top: 8px; } }
+
+#trackingStatus, #effectStatus { position: absolute; top: calc(env(safe-area-inset-top, 0px) + 66px); left: 50%; transform: translateX(-50%); width: max-content; max-width: calc(100% - 36px); padding: 8px 13px; border-radius: 12px; background: var(--tray); color: var(--text); font-size: 12px; text-align: center; pointer-events: none; }
+#effectStatus { top: auto; bottom: calc(env(safe-area-inset-bottom, 0px) + 112px); color: var(--marigold); }
