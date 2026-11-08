@@ -1,4 +1,4 @@
-# Namma Vedi’s on abishekg.com
+# Namma Pattas on abishekg.com
 
 Public route: `/namma-vedis`, served as standalone HTML through an exact Vercel
 rewrite. The portfolio and Unhinged routes are unchanged; no iframe or login.
@@ -6,8 +6,12 @@ rewrite. The portfolio and Unhinged routes are unchanged; no iframe or login.
 The original Pattasu client code is reused at the user's explicit request:
 https://pattasu-diwali.vercel.app/. Its Three.js renderer, shaders, synthesized
 sound, eleven cracker types, props, smoke and paper effects remain, with credit
-to @ikevinadams. Namma Vedi’s / நம்ம வெடி branding, grand shows, Jailer-inspired
+to @ikevinadams. Namma Pattas / நம்ம பட்டாசு branding, grand shows, Jailer-inspired
 names and sparkling Happy Diwali lettering are retained.
+
+The landing title cycles through Tamil, Hindi and Telugu in Latin letters every
+1.8 seconds with a 180 ms transition. The existing `/namma-vedis` route remains
+valid after the name change.
 
 ## World placement
 

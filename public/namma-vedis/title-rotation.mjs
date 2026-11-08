@@ -1,6 +1,6 @@
 // All titles use Latin letters; the Tamil name stays the site's permanent brand.
 const titles = [
-  { text: 'Namma Vedi’s', language: 'Tamil' },
+  { text: 'Namma Pattas', language: 'Tamil' },
   { text: 'Hamare Patakhe', language: 'Hindi' },
   { text: 'Mana Tapakayalu', language: 'Telugu' },
 ];
@@ -24,8 +24,8 @@ function sync() {
       word.textContent = titles[index].text;
       word.dataset.language = titles[index].language;
       word.classList.remove('changing');
-    }, reducedMotion.matches ? 0 : 240);
-  }, 3600);
+    }, reducedMotion.matches ? 0 : 180);
+  }, 1800);
 }
 new MutationObserver(sync).observe(welcome, { attributes: true, attributeFilter: ['hidden'] });
 document.addEventListener('visibilitychange', sync);

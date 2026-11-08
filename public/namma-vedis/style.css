@@ -93,7 +93,7 @@ button:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
 #trackingStatus, #effectStatus { position: absolute; top: calc(env(safe-area-inset-top, 0px) + 66px); left: 50%; transform: translateX(-50%); width: max-content; max-width: calc(100% - 36px); padding: 8px 13px; border-radius: 12px; background: var(--tray); color: var(--text); font-size: 12px; text-align: center; pointer-events: none; }
 #effectStatus { top: auto; bottom: calc(env(safe-area-inset-bottom, 0px) + 112px); color: var(--marigold); }
 #start h1 { width: 100%; min-height: 1.15em; font-size: clamp(28px, 8.1vw, 56px); }
-.title-word { display: inline-block; white-space: nowrap; opacity: 1; transform: translateY(0); transition: opacity 240ms ease, transform 240ms ease; }
+.title-word { display: inline-block; white-space: nowrap; opacity: 1; transform: translateY(0); transition: opacity 180ms ease, transform 180ms ease; }
 .title-word.changing { opacity: 0; transform: translateY(-7px); }
 @media (prefers-reduced-motion: reduce) { .title-word { transition: none; transform: none !important; } .title-word.changing { opacity: 1; } }
 @media (max-height:480px) { #start h1 { font-size: clamp(28px, 7vw, 36px); } }
