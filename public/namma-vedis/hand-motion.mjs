@@ -9,7 +9,8 @@ export class HandObjectMotion {
   state = 'held';
   velocity = new Vector3();
   samples = [];
-  tiltSince = null;
+  tiltSince = null; motionCoherent = false;
+  heldPosition = null; heldQuaternion = null;
   constructor({ position, quaternion, floorY, kind, now }) {
     this.position = position.clone(); this.quaternion = quaternion.clone();
     this.initialNormal = UP.clone().applyQuaternion(quaternion);
@@ -31,8 +32,14 @@ export class HandObjectMotion {
     this.velocity.copy(position).sub(first.p).divideScalar(Math.max(.001, span));
     this.position.copy(position); this.quaternion.copy(quaternion);
     if (now - this.started < 220) return;
-    // At least three observations: one noisy depth estimate is not a throw.
-    if (this.bomb && this.samples.length >= 3 && span >= .09 && travel > .085 && this.velocity.length() > .8) {
+    // Require two consecutive movements in the same direction. A single depth
+    // spike among three otherwise still samples must not masquerade as a toss.
+    const recent = this.samples.slice(-3);
+    const a = recent.length === 3 ? recent[1].p.clone().sub(recent[0].p) : new Vector3();
+    const b = position.clone().sub(previous.p);
+    const coherent = a.length() > .012 && b.length() > .012 && a.dot(b) > .6 * a.length() * b.length();
+    this.motionCoherent = coherent;
+    if (this.bomb && coherent && span >= .09 && travel > .085 && this.velocity.length() > .8) {
       this.release(now, true); return;
     }
     const tilt = UP.clone().applyQuaternion(quaternion).angleTo(this.initialNormal);
@@ -41,15 +48,24 @@ export class HandObjectMotion {
       if (now - this.tiltSince >= 65) this.release(now, false);
     } else this.tiltSince = null;
   }
+  setHeldVisual(position, quaternion) {
+    if (this.state !== 'held') return;
+    this.heldPosition ??= new Vector3(); this.heldQuaternion ??= new Quaternion();
+    this.heldPosition.copy(position); this.heldQuaternion.copy(quaternion);
+  }
   release(now, toss = false) {
     if (this.state !== 'held') return;
+    // Start flight at the visible object, not at a newer noisy measurement.
+    if (this.heldPosition) {
+      this.position.copy(this.heldPosition); this.quaternion.copy(this.heldQuaternion);
+    }
     this.state = 'airborne';
     if (toss && now - this.lastSample < 320) this.velocity.multiplyScalar(2.2).clampLength(0, 6);
     else this.velocity.set(0, 0, 0);
   }
   step(dt, now) {
     if (this.state === 'held' && now - this.lastSample > 240) {
-      this.release(now, this.bomb && this.velocity.length() > .7 && now - this.lastSample < 320);
+      this.release(now, this.bomb && this.motionCoherent && this.velocity.length() > .7 && now - this.lastSample < 320);
     }
     if (this.state !== 'airborne') return;
     // Analytic constant-acceleration integration gives the same path at 30/60/120Hz.
@@ -65,5 +81,10 @@ export class HandObjectMotion {
       this.quaternion.identity(); this.state = 'landed';
     }
   }
-  burst() { this.state = 'spent'; this.velocity.set(0, 0, 0); }
+  burst() {
+    if (this.state === 'held' && this.heldPosition) {
+      this.position.copy(this.heldPosition); this.quaternion.copy(this.heldQuaternion);
+    }
+    this.state = 'spent'; this.velocity.set(0, 0, 0);
+  }
 }

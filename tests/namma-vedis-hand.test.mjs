@@ -45,6 +45,14 @@ test('no hand, folded fingers, uncertain or invalid landmarks cannot become a pl
   assert.equal(palmPose(unsure.result, ...unsure.args), null);
 });
 
+test('one misplaced knuckle cannot swing the estimated palm depth', () => {
+  for (const id of [0, 5, 9, 13, 17]) {
+    const f = fixture(); f.result.landmarks[0][id].x += .045;
+    const pose = palmPose(f.result, ...f.args);
+    assert.ok(pose); assert.ok(Math.abs(pose.position.z + .5) < .01, `landmark ${id}`);
+  }
+});
+
 test('palm acquisition, stale data and hand identity are gated before placement', () => {
   const f = fixture(), pose = palmPose(f.result, ...f.args), anchor = new HandAnchor();
   assert.equal(anchor.update(pose, 0), false); assert.equal(anchor.update(pose, 70), false);

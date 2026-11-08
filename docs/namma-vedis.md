@@ -95,6 +95,27 @@ room. This is not a measured hand mesh, precise depth sensor or finger occlusion
 Open fingers and a reasonably visible palm surface are required; side-on,
 folded, low-confidence, out-of-view or stale results cannot accept a placement.
 
+### Held-object stabilization
+
+Palm depth uses the median of valid width/length estimates across all five palm
+landmarks, so a single misplaced knuckle cannot determine the entire depth.
+The held object and placement guide share a sample-timed position/rotation
+filter. It suppresses small resting movement, smooths palm width, and raises
+its response rate during sustained movement. Large one-frame discontinuities
+need a confirming observation. New hand identity or a long gap resets the
+filter instead of interpolating from an unrelated old hand.
+
+Gesture detection uses the original measurements so visual smoothing does not
+slow down a throw. It now requires two consecutive movements in the same
+direction; an isolated depth spike is insufficient. Release and held bursts
+start from the stabilized displayed transform, avoiding a snap back to the raw
+measurement. Floor flight, upright landing and effect timers are unchanged.
+
+Synthetic 70ms measurement-noise tests reduce position RMS to 26% and rotation
+RMS to 24% of the injected noise. These are deterministic algorithm checks, not
+measured on-device improvement. The actual application also verifies that its
+rendered held root uses the filter, while existing toss/drop tests remain green.
+
 ### Throwing and dropping
 
 A hand object has held, airborne, landed and spent states. After placement,
@@ -179,7 +200,8 @@ events are batched per frame and only one 10,000 string can run at a time. The
   camera translation, reticle lifecycle, tracking loss/recovery, startup failure,
   audio completion gate, opaque model geometry and disposal, continuous S-shaped
   layout, all 10,000 instances and their lifecycle in the actual application.
-  All 51 checks pass, including automatic palm selection, all eight palm effects
+  All 59 checks pass, including held-object stabilization, robust depth,
+  responsive deliberate movement, continuous release, automatic palm selection, all eight palm effects
   dropping upright, continuous fountain timing, held/midair/landed bomb bursts,
   throw noise rejection, camera-pose compensation, refresh-rate-independent flight
   and landing, independent room effects/audio, hand loss recovery, worker

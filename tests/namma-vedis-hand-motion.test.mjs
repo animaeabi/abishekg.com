@@ -71,3 +71,19 @@ test('floor impact position is independent of refresh rate and always upright', 
   });
   assert.ok(positions[0].distanceTo(positions[1]) < 1e-7); assert.ok(positions[1].distanceTo(positions[2]) < 1e-7);
 });
+
+test('an isolated depth spike cannot throw the bomb, including when tracking is then lost', () => {
+  const m = make();
+  for (const time of [70, 140, 210, 280]) m.sample(new Vector3(0, 1.2, -1), new Quaternion(), time);
+  m.sample(new Vector3(0, 1.2, -.8), new Quaternion(), 350);
+  assert.equal(m.state, 'held'); m.step(.01, 600);
+  assert.equal(m.state, 'airborne'); near(m.velocity.x, 0); near(m.velocity.z, 0);
+});
+
+test('flight and a held burst start at the stabilized visible object with no measurement snap', () => {
+  for (const action of ['release', 'burst']) {
+    const m = make(), visible = new Vector3(.03, 1.18, -.98), q = new Quaternion().setFromAxisAngle(new Vector3(1, 0, 0), .1);
+    m.setHeldVisual(visible, q); m[action](100);
+    assert.deepEqual(m.position.toArray(), visible.toArray()); near(m.quaternion.angleTo(q), 0);
+  }
+});

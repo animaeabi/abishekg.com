@@ -36,11 +36,23 @@ export function palmPose(result, camera, width, height, sourceWidth, sourceHeigh
   const cover = Math.max(width / sourceWidth, height / sourceHeight);
   const covX = width / (sourceWidth * cover), covY = height / (sourceHeight * cover);
   const ndc = p => new THREE.Vector2((p.x - .5) * 2 / covX, (.5 - p.y) * 2 / covY);
-  const a = ndc(lm[5]), b = ndc(lm[17]);
   const projection = camera.projectionMatrix.elements;
-  const projectedSpan = Math.hypot((a.x - b.x) / projection[0], (a.y - b.y) / projection[5]);
-  if (projectedSpan < .025) return null;
-  const depth = Math.hypot(across.x, across.y) / projectedSpan;
+  // One width baseline is unstable when the knuckles become edge-on or a
+  // landmark jumps. Take the median of independent palm width/length estimates.
+  const depths = [];
+  for (let first = 0; first < PALM.length - 1; first++) for (let second = first + 1; second < PALM.length; second++) {
+    const i = PALM[first], j = PALM[second];
+    const a = ndc(lm[i]), b = ndc(lm[j]);
+    const projectedSpan = Math.hypot((a.x - b.x) / projection[0], (a.y - b.y) / projection[5]);
+    const physicalSpan = Math.hypot(points[i].x - points[j].x, points[i].y - points[j].y);
+    if (projectedSpan < .025 || physicalSpan < .018) continue;
+    const estimate = physicalSpan / projectedSpan;
+    if (estimate >= .12 && estimate <= 1.4) depths.push(estimate);
+  }
+  if (depths.length < 3) return null;
+  depths.sort((a, b) => a - b);
+  const middle = Math.floor(depths.length / 2);
+  const depth = depths.length % 2 ? depths[middle] : (depths[middle - 1] + depths[middle]) * .5;
   if (depth < .12 || depth > 1.4) return null;
   const center = PALM.reduce((p, i) => p.add(ndc(lm[i])), new THREE.Vector2()).multiplyScalar(1 / PALM.length);
   if (Math.abs(center.x) > .92 || Math.abs(center.y) > .92) return null;

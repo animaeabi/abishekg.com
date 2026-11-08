@@ -94,3 +94,18 @@ refresh-rate consistency, audio lock and worker camera ownership. The production
 Next build passes. These checks use real application logic with mocked drawing
 and camera input, not measured phone tracking. Physical Safari/Chrome acceptance
 still needs tilt/toss sensitivity, motion blur, floor alignment and GPU smoothness.
+
+
+## Held-object jitter correction — November 8, 2026
+
+Replaced direct packet-following with a shared adaptive position/rotation filter
+for the held body and ring, a small resting deadband, smoothed palm size and
+confirmation of large discontinuities. Palm depth now combines ten landmark
+baselines and takes the median of valid estimates. Raw measurements remain
+available to throw detection, which now rejects isolated spikes. Flight and
+held bursts begin at the displayed object rather than snapping to raw tracking.
+
+All 59 automated checks pass, including synthetic noise attenuation, deliberate
+movement response, single-knuckle depth noise, false-throw rejection, and real
+application integration. The production build passes. Physical-phone camera
+jitter, occlusion and motion-blur behavior still require device validation.

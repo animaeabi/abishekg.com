@@ -275,6 +275,21 @@ test('actual app: placement, new ground effects, release regressions and mixed-e
     qa.cancelPalmEffect(); qa.handAnchor.invalidate(); qa.handState();
   });
 
+  await t.test('the rendered held cracker uses stabilization while the hand remains still', () => {
+    qa.init(); qa.camera.position.set(0, 1.4, 0); qa.camera.rotation.set(0, 0, 0); qa.camera.updateMatrixWorld();
+    qa.palm(palm()); qa.simulateHand(.1); qa.selected.ground = 'flower'; qa.fireAt(195, 422);
+    const origin = palm().position.clone().applyMatrix4(qa.camera.matrixWorld); let raw = 0, shown = 0;
+    for (let i = 1; i <= 40; i++) {
+      const noisy = palm(); const offset = new RealThree.Vector3(Math.sin(i * 2.1) * .009, Math.sin(i * 1.7) * .006, Math.sin(i * 2.3) * .025);
+      noisy.position.add(offset); noisy.quaternion.multiply(new RealThree.Quaternion().setFromAxisAngle(new RealThree.Vector3(0, 0, 1), Math.sin(i * 2) * .1));
+      qa.palm(noisy); qa.simulateHand(.07);
+      if (i > 10) { raw += offset.lengthSq(); shown += qa.palmWorld.position.distanceToSquared(origin); }
+    }
+    assert.ok(Math.sqrt(shown / raw) < .45, `rendered/measurement noise ratio: ${Math.sqrt(shown / raw)}`);
+    assert.equal(qa.motion.state, 'held'); assert.equal(qa.ring.visible, false);
+    qa.cancelPalmEffect(); qa.handAnchor.invalidate(); qa.handState(); qa.clearParticles();
+  });
+
   await t.test('every floor cracker dispatches on the palm, drops to the floor and releases its owned geometry', () => {
     for (const id of ['atom', 'sutli', 'lakshmi', 'flower', 'spinner', 'wala100', 'wala1000', 'wala10000']) {
       qa.init(); qa.palm(palm()); qa.simulateHand(.05); qa.selected.ground = id; qa.fireAt(195, 422);
