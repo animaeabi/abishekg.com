@@ -749,11 +749,11 @@ function bomb(p, b) {
     return false;
   } });
 }
-// All strings run across the phone's X axis at placement, then stay in the world.
+// The S-shaped garland and its burn front stay fixed in the world.
 const WALAS = WALA_CONFIGS;
 function wala(p, w) {
   const groundY = p.y, n = w.n, large = n === 10000;
-  const { points: pts, cordPoints, right, forward, perRow } = createWalaLayout(p, camera.quaternion, w);
+  const { points: pts, directions, cordPoints } = createWalaLayout(p, camera.quaternion, w);
   const mat = new THREE.MeshStandardMaterial({ map: TEX.wala, roughness: .86, toneMapped: false });
   const cap = new THREE.MeshStandardMaterial({ color: 0xcba876, roughness: .96, toneMapped: false });
   const inst = new THREE.InstancedMesh(G.wala, [mat, cap, cap], n), dummy = new THREE.Object3D();
@@ -761,7 +761,7 @@ function wala(p, w) {
   const up = new THREE.Vector3(0, 1, 0);
   for (let i = 0; i < n; i++) {
     dummy.position.copy(pts[i]);
-    dummy.quaternion.setFromUnitVectors(up, forward.clone().multiplyScalar(i % 2 ? 1 : -1).addScaledVector(right, .25).normalize());
+    dummy.quaternion.setFromUnitVectors(up, directions[i]);
     dummy.scale.setScalar(w.scale);
     dummy.updateMatrix();
     // Reverse order lets the burn front reduce the draw count without uploading
@@ -776,8 +776,7 @@ function wala(p, w) {
   const cord = new THREE.Mesh(cordGeo, cordMat); cord.name = `wala-fuse-${n}`; world.add(cord);
   const cordCount = cordGeo.index.count;
   let t = 0, i = 0, cursor = .45, lastSound = -1, lastSmoke = -1;
-  const times = pts.map((_, k) => {
-    if (k > 0 && k % perRow === 0) cursor += .06;
+  const times = pts.map(() => {
     const at = cursor; cursor += rand(w.gap[0], w.gap[1]); return at;
   });
   emitters.push({ ground: true, largeWala: large, update(dt) {
@@ -984,7 +983,7 @@ function attachTrackedFeed(feedVideo) {
 }
 function trackingState(ready) {
   $('trackingStatus').hidden = ready || !worldTracking?.active;
-  $('trackingStatus').textContent = ready ? '' : 'Move slowly over a well-lit, textured floor to find your space.';
+  $('trackingStatus').textContent = ready ? '' : 'Aim at the floor and move your phone gently side to side.';
   if (!ready) { ring.visible = false; ring.material.opacity = 0; }
   updateModeLabel();
 }
@@ -1167,7 +1166,7 @@ async function beginExperience(useCamera = true) {
   renderPicker(); applyMute(); updateModeLabel();
   ensureAudio();
   try { if (navigator.wakeLock) await navigator.wakeLock.request('screen'); } catch {}
-  hint(worldTracking?.active ? 'Scan the floor slowly. Tap to place; select a cracker again for a new ring.' : 'Demo: drag to look around, then tap to light a cracker.', 6000);
+  hint(worldTracking?.active ? 'Aim at a well-lit patch of floor and move gently sideways. Tap when the ring appears.' : 'Demo: drag to look around, then tap to light a cracker.', 6000);
   if (wishName) queueSkyWish(1, `For ${wishName}`);
 }
 $('startBtn').addEventListener('click', () => beginExperience(true));

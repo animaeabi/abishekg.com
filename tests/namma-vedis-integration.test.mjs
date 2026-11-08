@@ -82,7 +82,7 @@ test('actual app hides the ring, fixes debris height, and gates every launch unt
   const text = qa.world.children.find(o => o.isPoints);
   assert.ok(text); assert.ok(text.geometry.attributes.position.array[2] < -90, 'lettering remains in the original sky direction');
 
-  // The new large string is an actual 10,000-instance object, anchored sideways.
+  // The large S-shaped string is an actual 10,000-instance anchored object.
   qa.setMode('ground'); qa.setFloor(0); qa.camera.position.set(0, 1.4, 0);
   qa.camera.rotation.set(-.7, 0, 0); qa.camera.updateMatrixWorld();
   qa.selected.ground = 'wala10000'; qa.fireAt(195, 422);

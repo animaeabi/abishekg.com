@@ -61,7 +61,10 @@ export function createWorldTracking({ XR8, canvas, webgl2, onContext = () => {},
         resolveStart = resolve; rejectStart = reject;
         startupTimer = setTimeout(() => fail(new Error('Camera startup timed out. Allow camera and motion access, then retry.')), 45000);
         try {
-          XR8.XrController.configure({ disableWorldTracking: false, scale: 'absolute' });
+          // Approximate size from the initial 1.4-unit camera height instead of
+          // waiting for metric scale estimation. Positional SLAM and the NORMAL
+          // tracking gate still control every placement and recovery.
+          XR8.XrController.configure({ disableWorldTracking: false, scale: 'responsive' });
           XR8.addCameraPipelineModules([XR8.XrController.pipelineModule(), pipeline]);
           // The existing Three renderer shares this canvas/context. It resets
           // its GL state before each render; XR8 owns frame timing and camera.

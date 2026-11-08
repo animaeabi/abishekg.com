@@ -14,14 +14,24 @@ names and sparkling Happy Diwali lettering are retained.
 Camera mode now uses the pinned `@8thwall/engine-binary@1.0.0` distributed SLAM
 runtime. It tracks translation and rotation together on mobile browsers,
 including iOS Safari, independently of native WebXR support. The runtime is
-copied unchanged into `/namma-vedis/xr/` by the prebuild/predev script. The full
+copied unchanged into `/namma-vedis/xr/1.0.0/` by the prebuild/predev script. The full
 license ships with it and is linked in the welcome-screen attribution.
 
 The runtime owns camera capture and frame timing. Three.js uses the runtime's
 wrapped GL context, tracked camera pose, calibrated projection, and cropped
 camera texture for that same frame. The old gyro update cannot overwrite the
-tracked pose. No secondary camera stream is opened. Scene positions are in
-meters, with absolute-scale estimation and an initial floor scan.
+tracked pose. No secondary camera stream is opened. Responsive scale uses the
+initial 1.4-unit camera height for approximate sizing, avoiding metric scale
+calibration. Positional tracking remains enabled; the first valid `NORMAL` pose
+unlocks placement, with no additional scan countdown. Limited tracking still
+pauses effects and blocks placement. Model size is approximate rather than a
+measured physical dimension.
+
+The SLAM module preloads alongside the engine while the welcome page is open,
+and versioned runtime files use a year-long immutable cache for return visits.
+Camera permission is still requested only after Start. Scanning guidance asks
+for gentle sideways translation while aiming at a well-lit floor. These changes
+reduce initialization work; scan latency still needs on-phone measurement.
 
 A ground tap copies a hit-test position (or intersects the tracked estimated
 floor plane). Each prop, shadow, scorch, glow pulse, bouncing spark and scrap
@@ -58,15 +68,16 @@ the body. Floor light, contact shadows, sparks and smoke depth-test against thes
 bodies; a glow no longer paints the camera image over the solid object.
 
 100, 1,000 and 10,000 wala options contain their stated instance counts. Each
-captures the camera's horizontal right vector once at placement. Longer strings
-fold into broad horizontal rows, with a connecting fuse. Burning reduces the
+forms a single flowing S-shaped garland with a connecting fuse; larger counts
+form a fuller garland following the same curve. Bodies follow its local bends.
+The shape captures the view once and remains fixed in world space. Burning reduces the
 instance draw count instead of uploading every transform again. Particle/audio
 events are batched per frame and only one 10,000 string can run at a time. The
-10,000 sequence takes approximately 32 seconds, excluding tracking pauses.
+10,000 sequence takes approximately 30 seconds, excluding tracking pauses.
 
 - `node --test tests/namma-vedis-*.test.mjs`: orientation, world coordinates,
   camera translation, reticle lifecycle, tracking loss/recovery, startup failure,
-  audio completion gate, opaque model geometry and disposal, horizontal string
+  audio completion gate, opaque model geometry and disposal, continuous S-shaped
   layout, all 10,000 instances and their lifecycle in the actual application.
 - `node --check public/namma-vedis/app.js`
 - `npm run build`: Next.js export plus local AR runtime assets.

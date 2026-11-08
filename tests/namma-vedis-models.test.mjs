@@ -38,17 +38,23 @@ for (const kind of ['atom', 'sutli', 'lakshmi']) {
 }
 
 for (const [id, config] of Object.entries(WALA_CONFIGS)) {
-  test(`${id} lays the full count across the placement X axis and stays fixed when the view changes`, () => {
+  test(`${id} follows a continuous S curve and stays fixed when the view changes`, () => {
     for (const yaw of [0, Math.PI / 2, -1.2]) {
       const point = new THREE.Vector3(2, .8, -3);
       const q = new THREE.Quaternion().setFromEuler(new THREE.Euler(-.6, yaw, .12, 'YXZ'));
-      const { points, right, forward } = createWalaLayout(point, q, config);
+      const { points, directions, cordPoints, right, forward } = createWalaLayout(point, q, config);
       assert.equal(points.length, Number(id.slice(4)));
-      const across = points.map(p => p.clone().sub(point).dot(right));
-      const depth = points.map(p => p.clone().sub(point).dot(forward));
-      const width = Math.max(...across) - Math.min(...across), length = Math.max(...depth) - Math.min(...depth);
-      assert.ok(width > length * 3, 'wide horizontal layout, not a string extending into depth');
+      assert.equal(directions.length, points.length);
+      const across = cordPoints.map(p => p.clone().sub(point).dot(right));
+      const depth = cordPoints.map(p => p.clone().sub(point).dot(forward));
+      assert.ok(across[48] > config.width * .3 && across[144] < -config.width * .3, 'opposite rounded bends form an S');
+      assert.ok(Math.abs(across[96]) < .01, 'curve crosses its center');
+      for (let i = 1; i < cordPoints.length; i++) {
+        assert.ok(depth[i] > depth[i - 1], 'no row reversal or jump to a new row');
+        assert.ok(cordPoints[i].distanceTo(cordPoints[i - 1]) < config.length / 70, 'fuse stays continuous');
+      }
       assert.ok(points.every(p => Math.abs(p.y - (.8 + .0075 * config.scale)) < 1e-8));
+      assert.ok(directions.every(d => Math.abs(d.length() - 1) < 1e-8 && Math.abs(d.y) < 1e-8));
       const before = points.map(p => p.toArray());
       q.setFromEuler(new THREE.Euler(0, yaw + 1, 0)); point.set(10, 3, 5);
       assert.deepEqual(points.map(p => p.toArray()), before, 'layout does not retain camera/placement references');

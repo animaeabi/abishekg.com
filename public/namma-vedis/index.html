@@ -9,6 +9,8 @@
 <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
 <meta name="description" content="Diwali firecrackers through your phone's camera. Tap the sky to burst a shell, or tilt down and set off bombs and walas on the ground.">
 <title>Namma Vedi’s · நம்ம வெடி</title>
+<link rel="modulepreload" href="/namma-vedis/xr/1.0.0/xr-slam.js">
+<script async fetchpriority="high" src="/namma-vedis/xr/1.0.0/xr.js" data-preload-chunks="slam"></script>
 <link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cg stroke='%23ffae2b' stroke-width='5' stroke-linecap='round'%3E%3Cpath d='M32 6v14M32 44v14M6 32h14M44 32h14M14 14l10 10M40 40l10 10M50 14L40 24M24 40L14 50'/%3E%3C/g%3E%3C/svg%3E">
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
@@ -17,7 +19,6 @@
 <script type="importmap">
 { "imports": { "three": "/namma-vedis/three.module.min.js" } }
 </script>
-<script async src="/namma-vedis/xr/xr.js" data-preload-chunks="slam"></script>
 </head>
 <body>
 
@@ -50,7 +51,7 @@
   <p id="lede">Your camera. Namma celebration. Scan your floor, place a cracker, and walk around the magic.</p>
   <button id="startBtn" type="button">Start camera</button>
   <p class="fine" id="note">Camera and motion permission are requested when you start. Nothing is recorded or uploaded.</p><button id="demoBtn" class="text-button" hidden>Try without camera</button>
-  <p id="credit">Namma Vedi’s · by Abishek<br><a href="https://pattasu-diwali.vercel.app/" target="_blank" rel="noopener">Original Pattasu experience by @ikevinadams</a><br><a href="/namma-vedis/xr/LICENSE" target="_blank" rel="noopener">AR: 8th Wall · © 2026 Niantic Spatial · License &amp; warranty disclaimer</a></p>
+  <p id="credit">Namma Vedi’s · by Abishek<br><a href="https://pattasu-diwali.vercel.app/" target="_blank" rel="noopener">Original Pattasu experience by @ikevinadams</a><br><a href="/namma-vedis/xr/1.0.0/LICENSE" target="_blank" rel="noopener">AR: 8th Wall · © 2026 Niantic Spatial · License &amp; warranty disclaimer</a></p>
 </section>
 <div id="bootError" hidden>This needs a connection the first time it loads. Check yours and reload.</div>
 

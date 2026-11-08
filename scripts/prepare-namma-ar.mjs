@@ -5,7 +5,8 @@ import { fileURLToPath } from 'node:url';
 // account, API key, subscription, or camera upload is required.
 const root = new URL('../', import.meta.url);
 const source = new URL('node_modules/@8thwall/engine-binary/dist/', root);
-const target = new URL('public/namma-vedis/xr/', root);
+// Versioned URLs allow immutable caching without trapping a future upgrade.
+const target = new URL('public/namma-vedis/xr/1.0.0/', root);
 await mkdir(target, { recursive: true });
 for (const path of ['xr.js', 'xr-slam.js', 'resources', 'LICENSE']) {
   await cp(fileURLToPath(new URL(path, source)), fileURLToPath(new URL(path, target)), { recursive: true });
