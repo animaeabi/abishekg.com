@@ -1328,8 +1328,8 @@ $('motionBtn').addEventListener('click', async () => {
   hint(gyro ? 'Move your phone. Sky and floor switch automatically as motion arrives.' : 'Motion is blocked. Enable Motion & Orientation Access in Safari settings, then reload.', 6500);
 });
 modeEl.addEventListener('click', () => {
-  if (worldTracking?.active || (gyro && orient.ok)) { hint('Automatic: point down for the floor, lift up for the sky.', 3500); return; }
-  look.pitch = mode === 'sky' ? -.75 : .12;
+  if (worldTracking?.active || (gyro && orient.ok)) { hint('Straight ahead or down: floor. Tilt upward for the sky.', 3500); return; }
+  look.pitch = mode === 'sky' ? -.75 : .6;
 });
 addEventListener('pagehide', (event) => {
   if (event.persisted) worldTracking?.pause();

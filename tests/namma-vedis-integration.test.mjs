@@ -47,7 +47,7 @@ test('actual app: placement, new ground effects, release regressions and mixed-e
   source = source.replace("import * as THREE from 'three';", 'const THREE = globalThis.__nammaTestThree;');
   source = source.replace(/from '(\.\/[^']+)'/g, (_, p) => `from '${new URL(p, path).href}'`);
   source += `\nexport const qa = { camera, world, ring, emitters, P, S, pulses, selected, atomSequence, placementGuide,
-    fireAt, setMode, updateRing, step, queueSkyWish, writeSky, scatterPaper, updateSmoke, sSize, smokeGeo, trackingState,
+    fireAt, setMode, updateCamera, updateRing, step, queueSkyWish, writeSky, scatterPaper, updateSmoke, sSize, smokeGeo, trackingState,
     flowerPot, sanguchakram, wala, WALAS, royalShow, peony, chrysanthemum, goldenRain, crackling, diamondBurst, launch, tone, noise,
     init() { playing = true; floorY = 0; worldTracking = { active: true, ready: true, hit: () => null }; },
     setFloor(y) { floorY = y; },
@@ -59,6 +59,25 @@ test('actual app: placement, new ground effects, release regressions and mixed-e
     tick(dt) { for (let i = emitters.length - 1; i >= 0; i--) if (!emitters[i].update(dt)) emitters.splice(i, 1); },
   };`;
   const { qa } = await import(`data:text/javascript;base64,${Buffer.from(source).toString('base64')}`);
+  await t.test('tracked level view stays on the floor tray and upward tilt switches without chatter', () => {
+    qa.init(); qa.setMode('sky');
+    for (const pitch of [0, -.1, .15, .3, .4]) {
+      qa.camera.rotation.set(pitch, .7, .2, 'YXZ'); qa.updateCamera(1 / 60);
+      assert.equal(elements.get('picker').dataset.tray, 'ground');
+      assert.equal(elements.get('mode').textContent, 'Floor · AR');
+    }
+    qa.camera.rotation.set(.55, .7, .2, 'YXZ'); qa.updateCamera(1 / 60);
+    assert.equal(elements.get('picker').dataset.tray, 'sky');
+    qa.camera.rotation.set(.3, .7, .2, 'YXZ'); qa.updateCamera(1 / 60);
+    assert.equal(elements.get('picker').dataset.tray, 'sky');
+    qa.camera.rotation.set(0, .7, .2, 'YXZ'); qa.updateCamera(1 / 60);
+    assert.equal(elements.get('picker').dataset.tray, 'ground');
+    // The camera-free demo's mode button still clears the new sky threshold.
+    qa.setTracker(null); elements.get('mode').handlers.click(); qa.updateCamera(1 / 60);
+    assert.equal(elements.get('picker').dataset.tray, 'sky');
+    elements.get('mode').handlers.click(); qa.updateCamera(1 / 60);
+    assert.equal(elements.get('picker').dataset.tray, 'ground');
+  });
   qa.init(); qa.camera.position.set(0, 1.4, 0); qa.camera.rotation.x = -.7; qa.camera.updateMatrixWorld();
   qa.setMode('ground'); qa.updateRing(1); assert.equal(qa.ring.visible, true);
   qa.fireAt(195, 422); assert.equal(qa.ring.visible, false); assert.equal(qa.atomSequence.phase, 'fuse');

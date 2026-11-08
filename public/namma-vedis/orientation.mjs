@@ -19,7 +19,11 @@ export function deviceQuaternion(THREE, orientation, screenAngle = 0) {
 }
 
 export function modeForPitch(current, pitch) {
-  if (current === 'sky' && pitch < -.33) return 'ground';
-  if (current === 'ground' && pitch > -.18) return 'sky';
+  // Pitch is the camera's elevation above the horizon. Level and downward
+  // views belong to the floor tray; sky requires a deliberate upward tilt.
+  // Separate enter/exit angles keep small hand movements from flickering.
+  const radians = Math.PI / 180;
+  if (current === 'sky' && pitch <= 12 * radians) return 'ground';
+  if (current === 'ground' && pitch >= 24 * radians) return 'sky';
   return current;
 }

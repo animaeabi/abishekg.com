@@ -43,6 +43,11 @@ Sky launches, multi-shot shows and delayed lettering capture their original
 world origin and direction. They are not re-aimed as the phone moves. Artificial
 screen shake is disabled in AR because it breaks camera alignment.
 
+Automatic mode uses the tracked camera's elevation, not image recognition.
+Straight-ahead and downward views use the floor tray. Sky starts at 24 degrees
+above the horizon and returns to floor at 12 degrees, leaving a stable gap for
+small hand movements. This also applies in portrait and landscape orientations.
+
 The placement ring vanishes immediately on placement. It stays hidden through
 camera movement and tracking recovery. Selecting a cracker or changing surface
 arms it again. Tracking loss hides virtual content, pauses its simulation and
@@ -95,7 +100,7 @@ events are batched per frame and only one 10,000 string can run at a time. The
   camera translation, reticle lifecycle, tracking loss/recovery, startup failure,
   audio completion gate, opaque model geometry and disposal, continuous S-shaped
   layout, all 10,000 instances and their lifecycle in the actual application.
-  All 30 checks pass, including fountain/spinner lifecycle, fixed centers,
+  All 31 checks pass, including level/upward mode selection, fountain/spinner lifecycle, fixed centers,
   translated sky origins, settled paper/lettering, sound cleanup and recovery.
 - `node --check public/namma-vedis/app.js`
 - `npm run build`: Next.js export plus local AR runtime assets.
