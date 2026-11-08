@@ -46,7 +46,7 @@
 
 <section id="start" aria-labelledby="title">
   <small>Happy Diwali</small>
-  <span class="tamil-name" lang="ta">நம்ம வெடி</span><h1 id="title">Namma Vedi’s</h1>
+  <span class="tamil-name" lang="ta">நம்ம வெடி</span><h1 id="title" aria-label="Namma Vedi’s — our fireworks"><span id="rotatingTitle" class="title-word" data-language="Tamil" aria-hidden="true">Namma Vedi’s</span></h1>
   <p id="lede">Your camera. Namma celebration. Scan your floor, place a cracker, and walk around the magic.</p>
   <button id="startBtn" type="button">Start camera</button>
   <p class="fine" id="note">Camera and motion permission are requested when you start. Nothing is recorded or uploaded.</p><button id="demoBtn" class="text-button" hidden>Try without camera</button>
@@ -58,6 +58,7 @@
   setTimeout(function () { if (!window.__ready) document.getElementById('bootError').hidden = false; }, 9000);
 </script>
 
+<script type="module" src="/namma-vedis/title-rotation.mjs"></script>
 <script type="module" src="/namma-vedis/app.js"></script>
 </body>
 </html>
