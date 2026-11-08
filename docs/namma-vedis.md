@@ -83,8 +83,8 @@ locally; only static SDK/WASM/model assets are fetched from jsDelivr and Google.
 Showing one open hand automatically selects the floor-cracker tray, labels the
 surface “Palm · Auto” and moves the ring onto the palm. Three consistent valid
 results are required. The ring disappears when tapped; the cracker is scaled to
-the palm and its body, shadow, sparks and paper use a separate palm coordinate
-system. Every floor cracker is supported, including the three S-shaped walas.
+the palm. Its body and contact shadow follow the hand while held; sparks,
+smoke and paper enter room coordinates immediately and never move with the hand. Every floor cracker is supported, including the three S-shaped walas.
 Only one palm effect runs at a time; floor effects keep their original room
 coordinates. Removing the hand returns the placement target to the floor/sky
 angle logic. No Hand-mode selector or additional page is required.
@@ -95,14 +95,43 @@ room. This is not a measured hand mesh, precise depth sensor or finger occlusion
 Open fingers and a reasonably visible palm surface are required; side-on,
 folded, low-confidence, out-of-view or stale results cannot accept a placement.
 
-Brief tracking loss hides and pauses palm content and its separate audio bus,
-without pausing room content. After five seconds without a valid hand, the
-unfinished palm effect is cancelled and its resources freed, including any
-Atom lock. Cancellation invalidates an old ringing callback so it cannot unlock
-a later Atom sequence. Normal Atom completion still waits for the sound tail.
+### Throwing and dropping
+
+A hand object has held, airborne, landed and spent states. After placement,
+relative palm tilt releases it: 18 degrees for fountains, spinners and walas,
+24 degrees for bombs, with a 65ms dwell and a short initial settling interval.
+A bomb also releases on a deliberate toss measured across at least three room
+position samples. Throw velocity is estimated over at most 240ms, amplified
+2.2x for the miniature effect and capped at 6 units/second. Single-frame depth
+jumps are rejected. Capture-time camera pose is retained with each inference
+request, so inference latency does not substitute a later camera pose.
+
+Brief missed landmarks retain the held object. More than 240ms without accepted
+motion samples releases it rather than hiding, cancelling or restarting it.
+Curled fingers and a more tilted palm can continue an already acquired hold;
+new placements still require an open palm. Worker failure releases the current
+object and leaves floor/sky AR available. Room tracking loss still pauses both
+simulation and audio until the room coordinate system recovers.
+
+Released objects follow a gravity trajectory, preserving their size, then land
+upright at the captured estimated room floor height. Collision time is solved
+within each frame so the landing position is consistent at 30/60/120Hz. The
+fountain/spinner/string clock runs continuously during falling and landing.
+The hand target has its own root and cannot drag a released object back.
+Airborne contact shadows and floating scorch marks are suppressed.
+
+Palm bombs use longer fuses: Atom 3.2s, Hukum 2.8s, Lakshmi 2.4s. Tapping starts
+the existing fuse; no additional lighting gesture is required. Holding until
+the deadline bursts the bomb in the hand; a late toss can burst in the air;
+an early release lands before bursting. The burst freezes its origin and
+emitted particles stay in the room. Atom shows the remaining time and retains
+the existing ringing-completion lock. Floor-only bomb fuse timings are unchanged.
+
 The worker uses one frame in flight at a maximum 512-pixel input dimension,
-sampling less often while searching. Failure leaves the existing floor/sky AR
-working and displays an explanatory hint.
+sampling less often while searching. Landmarks infer depth; this is a gravity
+simulation against the AR floor estimate, not a measured hand mesh, room mesh,
+real-world object collision or finger occlusion. Throw sensitivity, motion blur,
+fast hand exits and perceived floor height still need physical-phone validation.
 
 Primary references:
 - https://developers.google.com/edge/mediapipe/solutions/vision/hand_landmarker
@@ -150,8 +179,10 @@ events are batched per frame and only one 10,000 string can run at a time. The
   camera translation, reticle lifecycle, tracking loss/recovery, startup failure,
   audio completion gate, opaque model geometry and disposal, continuous S-shaped
   layout, all 10,000 instances and their lifecycle in the actual application.
-  All 39 checks pass, including automatic palm selection, all eight palm effects,
-  independent room/palm movement and audio, tracking loss/cancellation, worker
+  All 51 checks pass, including automatic palm selection, all eight palm effects
+  dropping upright, continuous fountain timing, held/midair/landed bomb bursts,
+  throw noise rejection, camera-pose compensation, refresh-rate-independent flight
+  and landing, independent room effects/audio, hand loss recovery, worker
   readiness/camera ownership, level/upward mode selection, fixed centers,
   translated sky origins, settled paper/lettering, sound cleanup and recovery.
 - `node --check public/namma-vedis/app.js`

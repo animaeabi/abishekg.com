@@ -9,7 +9,7 @@ export const handEffectScale = (kind, width) => clamp(width, .05, .11) * .7 / (f
 // MediaPipe's world points are hand-relative, not positions in the AR room.
 // Estimate camera depth from projected palm width, then use the same cover crop
 // and projection as the camera image. No metric-depth/scene-mesh claim is made.
-export function palmPose(result, camera, width, height, sourceWidth, sourceHeight) {
+export function palmPose(result, camera, width, height, sourceWidth, sourceHeight, holding = false) {
   const lm = result?.landmarks?.[0], wm = result?.worldLandmarks?.[0];
   if (lm?.length !== 21 || wm?.length !== 21 || ![width, height, sourceWidth, sourceHeight].every(v => v > 0)) return null;
   if (![...lm, ...wm].every(p => [p.x, p.y, p.z].every(Number.isFinite))) return null;
@@ -20,7 +20,7 @@ export function palmPose(result, camera, width, height, sourceWidth, sourceHeigh
   const wrist = points[0];
   const extended = [[8, 6], [12, 10], [16, 14], [20, 18]]
     .filter(([tip, joint]) => points[tip].distanceTo(wrist) > points[joint].distanceTo(wrist) * 1.12).length;
-  if (extended < 3) return null;
+  if (!holding && extended < 3) return null;
   const across = points[5].clone().sub(points[17]);
   const palmWidth = across.length();
   if (palmWidth < .025 || palmWidth > .16) return null;
@@ -29,7 +29,7 @@ export function palmPose(result, camera, width, height, sourceWidth, sourceHeigh
   // The visible surface faces the camera on either hand. Edge-on hands have
   // unreliable depth and are deliberately rejected rather than jumping.
   if (normal.z < 0) normal.negate();
-  if (normal.z < .22) return null;
+  if (normal.z < (holding ? .06 : .22)) return null;
   const right = new THREE.Vector3().crossVectors(normal, back).normalize();
   const localZ = new THREE.Vector3().crossVectors(right, normal).normalize();
   const q = new THREE.Quaternion().setFromRotationMatrix(new THREE.Matrix4().makeBasis(right, normal, localZ));
@@ -52,7 +52,8 @@ export class HandAnchor {
   ready = false; streak = 0; lastSeen = -Infinity; lockedLabel = null;
   pose = null;
   update(pose, now) {
-    if (!pose || (this.lockedLabel && pose.label !== this.lockedLabel)) { this.invalidate(); return false; }
+    if (!pose) { if (now - this.lastSeen > 180) this.invalidate(); return this.ready; }
+    if (this.lockedLabel && pose.label !== this.lockedLabel) { this.invalidate(); return false; }
     this.streak++; this.lastSeen = now; this.pose = pose;
     this.ready = this.streak >= 3;
     return this.ready;

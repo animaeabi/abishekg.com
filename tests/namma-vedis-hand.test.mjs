@@ -62,7 +62,7 @@ test('all eight floor crackers fit the same palm, including every S-shaped wala'
 });
 
 test('hand worker borrows the AR video, waits for its model and permits only one frame in flight', async t => {
-  const saved = new Map(), sent = []; let worker, lost = 0, results = 0, stoppedTracks = 0, closed = 0;
+  const saved = new Map(), sent = []; let worker, lost = 0, results = 0, stoppedTracks = 0, closed = 0, deliveredContext;
   class Worker {
     constructor() { worker = this; }
     postMessage(data) { sent.push(data); }
@@ -77,7 +77,8 @@ test('hand worker borrows the AR video, waits for its model and permits only one
   t.after(() => { for (const [key, descriptor] of saved) { if (descriptor) Object.defineProperty(globalThis, key, descriptor); else delete globalThis[key]; } });
   const stream = { getTracks: () => [{ stop() { stoppedTracks++; } }] };
   const video = { srcObject: stream, readyState: 4, videoWidth: 640, videoHeight: 480, currentTime: 1 };
-  const tracker = createHandTracking({ video, onResult: () => results++, onLost: () => lost++, onError: e => { throw e; } });
+  const capture = { cameraPose: 42 };
+  const tracker = createHandTracking({ video, captureContext: () => ({ ...capture }), onResult: (_result, _time, frame) => { results++; deliveredContext = frame; }, onLost: () => lost++, onError: e => { throw e; } });
   t.after(() => tracker.stop());
   const boot = tracker.start(); tracker.tick(performance.now());
   assert.equal(sent.length, 1, 'only init, no frames before model readiness');
@@ -85,11 +86,26 @@ test('hand worker borrows the AR video, waits for its model and permits only one
   const time = performance.now(); tracker.tick(time); await Promise.resolve();
   assert.equal(sent.filter(m => m.type === 'frame').length, 1);
   video.currentTime++; tracker.tick(time + 100); assert.equal(sent.filter(m => m.type === 'frame').length, 1);
-  const frame = sent.at(-1);
+  const frame = sent.at(-1); capture.cameraPose = 90;
   worker.receive({ type: 'result', result: {}, ...frame, type: 'result' }); assert.equal(results, 1);
+  assert.equal(deliveredContext.cameraPose, 42, 'inference uses the camera pose at capture, not delivery');
   tracker.pause(); worker.receive({ ...frame, type: 'result', result: {} }); assert.equal(results, 1, 'late paused frame discarded');
   tracker.resume(); tracker.tick(time + 200); tracker.pause(); await Promise.resolve();
   assert.equal(closed, 1, 'capture completing after pause is released');
   tracker.stop(); assert.equal(worker.terminated, true); assert.ok(lost > 0);
   assert.equal(stoppedTracks, 0); assert.equal(video.srcObject, stream, 'the AR engine retains camera ownership');
+});
+
+
+test('one missed palm frame does not hide an active hand; sustained loss removes the target', () => {
+  const f = fixture(), pose = palmPose(f.result, ...f.args), anchor = new HandAnchor();
+  for (const time of [0, 70, 140]) anchor.update(pose, time);
+  assert.equal(anchor.update(null, 210), true); assert.equal(anchor.update(null, 280), true);
+  assert.equal(anchor.update(null, 350), false);
+});
+
+test('a placed cracker can track curled fingers without allowing a new closed-hand placement', () => {
+  const f = fixture();
+  for (const id of [8, 12, 16, 20]) f.result.worldLandmarks[0][id] = { ...f.result.worldLandmarks[0][0] };
+  assert.equal(palmPose(f.result, ...f.args), null); assert.ok(palmPose(f.result, ...f.args, true));
 });

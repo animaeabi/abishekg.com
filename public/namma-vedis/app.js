@@ -8,10 +8,11 @@ import { AtomSequence, playAtomAftertone } from './atom-aftertone.mjs';
 import { createCrackerModel, addCrackerLights } from './cracker-models.mjs';
 import { WALA_CONFIGS, createWalaLayout } from './wala-layout.mjs';
 import { HandAnchor, palmPose, handEffectScale } from './hand-anchor.mjs';
+import { HandObjectMotion, PALM_FUSES } from './hand-motion.mjs';
 import { createHandTracking } from './hand-tracking.mjs';
 const handAnchor = new HandAnchor();
 let handTracker = null, handWasReady = false, handAudio = null;
-let atomRun = 0, atomOnPalm = false;
+let atomRun = 0, atomOnPalm = false, palmMotion = null;
 const atomSequence = new AtomSequence();
 let worldTracking = null, trackingStarting = false;
 const placementGuide = new PlacementGuide();
@@ -55,9 +56,10 @@ renderer.setClearColor(0x000000, 1);
 const scene = new THREE.Scene();
 const world = new THREE.Group(); scene.add(world);
 const palmWorld = new THREE.Group(); scene.add(palmWorld); palmWorld.visible = false;
+const handGuide = new THREE.Group(); scene.add(handGuide); handGuide.visible = false;
 let effectSpace = world;
 const roomPaused = () => Boolean(playing && worldTracking?.active && !worldTracking.ready);
-const spacePaused = space => space === palmWorld ? !handAnchor.ready : roomPaused();
+const spacePaused = space => roomPaused() || (space === palmWorld && !palmMotion);
 addCrackerLights(scene);
 const camera = new THREE.PerspectiveCamera(70, 1, 0.05, 900);
 scene.add(camera);
@@ -143,11 +145,12 @@ for (let i = 0; i < 8; i++) {
 let poolN = 0;
 function floorGlow(x, z, c, intensity, radius, groundY = floorY) {
   if (poolN >= pools.length) return;
+  if (effectSpace === palmWorld && palmMotion && palmMotion.state !== 'held' && palmMotion.position.y > palmMotion.floorY + .01) return;
   const m = pools[poolN++];
   m.position.set(x, groundY + .004, z);
   m.quaternion.identity();
   if (effectSpace === palmWorld) {
-    radius = Math.min(radius, (handAnchor.pose?.width || .08) * .44 / palmWorld.scale.x);
+    if (palmMotion?.state === 'held') radius = Math.min(radius, (handAnchor.pose?.width || .08) * .44 / palmWorld.scale.x);
     m.position.applyMatrix4(palmWorld.matrixWorld); m.quaternion.copy(palmWorld.quaternion);
     m.scale.setScalar(radius * palmWorld.scale.x);
   } else m.scale.setScalar(radius);
@@ -227,6 +230,7 @@ function spawn(x, y, z, vx, vy, vz, life, size, c1, c2, drag, grav, flag = 0, tl
   P.age[i] = 0; P.life[i] = life; P.size[i] = size;
   P.r[i] = c1[0]; P.g[i] = c1[1]; P.b[i] = c1[2]; P.r2[i] = c2[0]; P.g2[i] = c2[1]; P.b2[i] = c2[2];
   P.drag[i] = drag; P.grav[i] = grav; P.flag[i] = flag; P.tl[i] = tl; P.tt[i] = 0; P.str[i] = str; P.glow[i] = glow; P.groundY[i] = groundY;
+  if (P.hand[i]) particleToRoom(P, i);
   return i;
 }
 let quality = 1;
@@ -342,6 +346,19 @@ function puff(x, y, z, vx, vy, vz, life, size, grow, lit, base, alpha, drag, gra
   S.rot[i] = rand(0, TAU); S.spin[i] = rand(-.5, .5) * (hard ? 12 : 1);
   S.r[i] = lit[0]; S.g[i] = lit[1]; S.b[i] = lit[2]; S.r2[i] = base[0]; S.g2[i] = base[1]; S.b2[i] = base[2];
   S.a[i] = alpha; S.drag[i] = drag; S.grav[i] = grav; S.wind[i] = wind; S.hard[i] = hard; S.groundY[i] = groundY;
+  if (S.hand[i]) particleToRoom(S, i);
+}
+const particlePoint = new THREE.Vector3(), particleVelocity = new THREE.Vector3(), particleMatrix = new THREE.Matrix3();
+function particleToRoom(store, i) {
+  particlePoint.set(store.x[i], store.y[i], store.z[i]).applyMatrix4(palmWorld.matrixWorld);
+  particleMatrix.setFromMatrix4(palmWorld.matrixWorld);
+  particleVelocity.set(store.vx[i], store.vy[i], store.vz[i]).applyMatrix3(particleMatrix);
+  store.x[i] = particlePoint.x; store.y[i] = particlePoint.y; store.z[i] = particlePoint.z;
+  store.vx[i] = particleVelocity.x; store.vy[i] = particleVelocity.y; store.vz[i] = particleVelocity.z;
+  const scale = palmWorld.scale.x;
+  store.size[i] *= scale; store.grav[i] *= scale;
+  if (store.grow) { store.grow[i] *= scale; store.wind[i] *= scale; }
+  store.groundY[i] = palmMotion?.floorY ?? floorY; store.hand[i] = 0;
 }
 function updateSmoke(dt) {
   let n = 0;
@@ -383,7 +400,7 @@ function syncAudioPlayback() {
     else if (context.state !== 'running') context.resume()?.catch(() => {});
   };
   sync(actx, spacePaused(effectSpace));
-  if (handAudio?.actx !== actx) sync(handAudio?.actx, !handAnchor.ready);
+  if (handAudio?.actx !== actx) sync(handAudio?.actx, spacePaused(palmWorld));
 }
 function ensureAudio() {
   if (!actx) {
@@ -774,6 +791,7 @@ function contactShadow(x, z, radius, opacity, groundY = floorY) {
   m.position.set(x, groundY + .003, z);
   m.scale.setScalar(radius);
   m.frustumCulled = false; m.renderOrder = 1;
+  m.userData.contactShadow = true;
   effectSpace.add(m);
   return m;
 }
@@ -797,21 +815,28 @@ const BOMBS = {
 };
 function bomb(p, b) {
   const groundY = p.y;
-  const { power, fuse } = b, model = createCrackerModel(b.kind, TEX), pan = panFor(p), R = .35 + .65 * power;
+  const onPalm = effectSpace === palmWorld;
+  const { power } = b, fuse = onPalm ? PALM_FUSES[b.kind] : b.fuse;
+  const model = createCrackerModel(b.kind, TEX), R = .35 + .65 * power;
+  let pan = panFor(p);
   model.group.position.copy(p); effectSpace.add(model.group);
   const prop = { model, shadow: contactShadow(p.x, p.z, b.shadow, .55, groundY) };
   sfx.fuse(fuse, pan);
   let t = 0;
   addEmitter({ ground: true, update(dt) {
     t += dt;
+    if (onPalm && b === BOMBS.atom && t < fuse) $('effectStatus').textContent = `Atom bomb · ${palmMotion?.state === 'held' ? 'toss it' : palmMotion?.state === 'landed' ? 'on the floor' : 'in the air'} · ${(fuse - t).toFixed(1)}s`;
     const tip = burnTip(model, t / fuse, .05 + Math.random() * .08);
     if (t < fuse) {
       for (let k = 0; k < 5; k++) spawn(tip.x, tip.y, tip.z, rand(-1, 1), rand(.5, 2), rand(-1, 1), rand(.08, .24), .008, C.white, C.amber, 1.5, 4, F.TWINKLE, 0, .03, 0, groundY);
       floorGlow(p.x, p.z, [1, .55, .2], .12 + Math.random() * .1, .4, groundY);
       return true;
     }
+    const grounded = !onPalm || palmMotion?.state === 'landed';
+    if (onPalm) palmMotion?.burst(); // Freeze this burst at its current room position.
+    pan = panFor(p);
     dropProp(prop);
-    const c = { x: p.x, y: groundY + .18, z: p.z };
+    const c = { x: p.x, y: groundY + (onPalm ? model.height * .5 : .18), z: p.z };
     glowAt(c, .7 * R, C.white, .075);
     glowAt(c, 1.1 * R, C.amber, .24);
     floorPulse(p.x, p.z, [1, .85, .6], 1.2 * power, 2.6 * R, 4.8, groundY);
@@ -831,14 +856,16 @@ function bomb(p, b) {
       });
     }
     vibrate(power > .5 ? [90, 30, 140] : 40);
-    for (let k = 0; k < 340 * power; k++) { const d = randDir(), v = rand(3, 13) * R; spawn(c.x, c.y, c.z, d[0] * v, Math.abs(d[1]) * v, d[2] * v, rand(.3, .9), rand(.012, .022), C.gold, C.red, 1.8, 9.8, F.BOUNCE, 0, .03, 0, groundY); }
-    if (power > .5) for (let k = 0; k < 120; k++) { const a = (k / 120) * TAU, v = 13 * R; spawn(c.x, groundY + .05, c.z, Math.cos(a) * v, 0, Math.sin(a) * v, .32, .03, C.white, C.amber, 4.4, 0, 0, 0, .02); }
+    for (let k = 0; k < 340 * power; k++) { const d = randDir(), v = rand(3, 13) * R; spawn(c.x, c.y, c.z, d[0] * v, (grounded ? Math.abs(d[1]) : d[1]) * v, d[2] * v, rand(.3, .9), rand(.012, .022), C.gold, C.red, 1.8, 9.8, F.BOUNCE, 0, .03, 0, groundY); }
+    if (power > .5) for (let k = 0; k < 120; k++) { const a = (k / 120) * TAU, v = 13 * R; spawn(c.x, grounded ? groundY + .05 : c.y, c.z, Math.cos(a) * v, 0, Math.sin(a) * v, .32, .03, C.white, C.amber, 4.4, 0, 0, 0, .02); }
     for (let k = 0; k < 42 * power; k++) { const a = rand(0, TAU), v = rand(.3, 1.9) * R; puff(c.x + Math.cos(a) * .1, c.y, c.z + Math.sin(a) * .1, Math.cos(a) * v, rand(.3, 1.8), Math.sin(a) * v, rand(2.4, 5), rand(.25, .55) * R, .5 * R, [.9, .6, .3], [.24, .23, .22], rand(.16, .3), 1.2, -.08, .1); }
     for (let k = 0; k < 20 * power; k++) puff(c.x + rand(-.12, .12), c.y, c.z + rand(-.12, .12), rand(-.25, .25), rand(1.2, 3.4), rand(-.25, .25), rand(2.2, 4.2), rand(.2, .42), .4, [1, .7, .4], [.26, .25, .24], rand(.18, .3), 1, -.12, .08);
     scatterPaper(c.x, c.y, c.z, Math.ceil(46 * power), 2.6, 13, groundY);
-    const scorch = contactShadow(p.x, p.z, .7 * R, .75, groundY);
-    let st = 0;
-    addEmitter({ update(d) { st += d; if (st > 9) { scorch.material.opacity = .75 * (1 - (st - 9) / 3); if (st > 12) { scorch.material.dispose(); scorch.removeFromParent(); return false; } } return true; } });
+    if (grounded) {
+      const scorch = contactShadow(p.x, p.z, .7 * R, .75, groundY);
+      let st = 0;
+      addEmitter({ update(d) { st += d; if (st > 9) { scorch.material.opacity = .75 * (1 - (st - 9) / 3); if (st > 12) { scorch.material.dispose(); scorch.removeFromParent(); return false; } } return true; } });
+    }
     return false;
   } });
 }
@@ -1089,7 +1116,7 @@ surfaceBtn.addEventListener('click', () => {
 function fireAt(cx, cy) {
   if (atomSequence.busy) return false;
   const onPalm = playing && handAnchor.ready;
-  if (!onPalm && worldTracking?.active && !worldTracking.ready) return false;
+  if (worldTracking?.active && !worldTracking.ready) return false;
   if (onPalm) setMode('ground');
   if (onPalm && emitters.some(e => e.ground && e.space === palmWorld)) { hint('Let this palm cracker finish first.', 2000); return false; }
   const ray = rayAt(cx, cy), id = selected[mode === 'sky' && royalOpen ? 'royal' : mode];
@@ -1127,7 +1154,14 @@ function fireAt(cx, cy) {
     for (let i = 0; i < N; i++) if (P.hand[i]) P.life[i] = 0;
     for (let i = 0; i < M; i++) if (S.hand[i]) S.life[i] = 0;
     for (let i = pulses.length - 1; i >= 0; i--) if (pulses[i].space === palmWorld) pulses.splice(i, 1);
-    palmWorld.scale.setScalar(handEffectScale(id, handAnchor.pose.width)); palmWorld.updateMatrixWorld(true);
+    const pose = handAnchor.pose;
+    const position = pose.worldPosition || pose.position.clone().applyMatrix4(camera.matrixWorld);
+    const quaternion = pose.worldQuaternion || camera.quaternion.clone().multiply(pose.quaternion);
+    palmMotion = new HandObjectMotion({ position, quaternion, floorY: worldTracking?.active ? 0 : -FLOOR_H, kind: id, now: last });
+    palmWorld.position.copy(position); palmWorld.quaternion.copy(quaternion);
+    palmWorld.scale.setScalar(handEffectScale(id, pose.width)); palmWorld.updateMatrixWorld(true);
+    if (BOMBS[id]) hint('Toss your hand to throw. The fuse keeps counting down.', 3200);
+    else hint('Tilt your palm to drop it. The fireworks keep going.', 3200);
     handAnchor.lock();
   }
   withEffectSpace(onPalm ? palmWorld : world, () => {
@@ -1263,11 +1297,10 @@ async function startWorldCamera() {
 function handState() {
   if (handWasReady !== handAnchor.ready) {
     handWasReady = handAnchor.ready;
-    placementGuide.select(); // Automatically arm the newly available surface.
+    if (!atomSequence.busy && !emitters.some(e => e.ground && e.space === palmWorld)) placementGuide.select();
   }
   syncAudioPlayback(); updateModeLabel();
-  if (atomOnPalm && atomSequence.busy) $('effectStatus').textContent = handAnchor.ready
-    ? (atomSequence.phase === 'fuse' ? 'Atom bomb · fuse lit' : 'Let it ring…') : 'Bring your palm back to continue';
+  if (atomOnPalm && atomSequence.phase === 'ringing') $('effectStatus').textContent = 'Let it ring…';
 }
 function cancelPalmEffect() {
   for (let i = emitters.length - 1; i >= 0; i--) if (emitters[i].space === palmWorld) emitters.splice(i, 1);
@@ -1286,24 +1319,31 @@ function cancelPalmEffect() {
   for (let i = pulses.length - 1; i >= 0; i--) if (pulses[i].space === palmWorld) pulses.splice(i, 1);
   if (atomOnPalm && atomSequence.busy) { atomRun++; atomSequence.finish(); $('effectStatus').hidden = true; press = null; }
   handAudio?.actx?.close()?.catch(() => {}); handAudio = null;
-  handAnchor.unlock(); palmWorld.visible = false;
+  handAnchor.unlock(); palmMotion = null; palmWorld.visible = false;
 }
 function startAutoHandTracking() {
   handTracker?.stop();
   handTracker = createHandTracking({ video,
-    onResult(result, time) {
-      handAnchor.update(palmPose(result, camera, W, H, video.videoWidth, video.videoHeight), time);
+    captureContext: () => ({ projectionMatrix: camera.projectionMatrix.clone(), matrix: camera.matrixWorld.clone(),
+      quaternion: camera.quaternion.clone(), width: W, height: H }),
+    onResult(result, time, frame) {
+      const pose = palmPose(result, frame || camera, frame?.width || W, frame?.height || H, video.videoWidth, video.videoHeight, palmMotion?.state === 'held' && emitters.some(e => e.ground && e.space === palmWorld));
+      if (pose) {
+        pose.worldPosition = pose.position.clone().applyMatrix4(frame?.matrix || camera.matrixWorld);
+        pose.worldQuaternion = (frame?.quaternion || camera.quaternion).clone().multiply(pose.quaternion);
+      }
+      handAnchor.update(pose, time);
       handState();
     },
     onLost() { handAnchor.invalidate(); handState(); },
     onError() {
-      handAnchor.invalidate(); cancelPalmEffect(); handState();
+      handAnchor.invalidate(); palmMotion?.release(performance.now()); handState();
       hint('Palm tracking is unavailable. Floor and sky still work.', 4000);
     },
   });
   // Background download/inference must never hold up the floor camera.
   handTracker.start().catch(() => {
-    handAnchor.invalidate(); cancelPalmEffect(); handState();
+    handAnchor.invalidate(); palmMotion?.release(performance.now()); handState();
     hint('Palm tracking is unavailable here. Floor and sky still work.', 4000);
   });
 }
@@ -1458,7 +1498,7 @@ $('motionBtn').addEventListener('click', async () => {
   hint(gyro ? 'Move your phone. Sky and floor switch automatically as motion arrives.' : 'Motion is blocked. Enable Motion & Orientation Access in Safari settings, then reload.', 6500);
 });
 modeEl.addEventListener('click', () => {
-  if (handAnchor.ready) { hint('Palm found. Tap to light a miniature cracker. Lower your hand to return to the floor.', 4000); return; }
+  if (handAnchor.ready) { hint('Palm found. Tap a miniature cracker, then tilt to drop or toss a bomb.', 4000); return; }
   if (worldTracking?.active || (gyro && orient.ok)) { hint('Straight ahead or down: floor. Tilt upward for the sky.', 3500); return; }
   look.pitch = mode === 'sky' ? -.75 : .6;
 });
@@ -1599,11 +1639,11 @@ ring.frustumCulled = false; ring.renderOrder = 4;
 world.add(ring);
 function updateRing(time) {
   if (playing && handAnchor.ready) {
-    if (ring.parent !== palmWorld) palmWorld.add(ring);
+    if (ring.parent !== handGuide) handGuide.add(ring);
     ring.visible = placementGuide.armed && !uiHidden && !atomSequence.busy && !emitters.some(e => e.ground && e.space === palmWorld);
     ring.material.opacity = ring.visible ? .6 : 0;
     ring.position.set(0, .005, 0);
-    ring.scale.setScalar(handAnchor.pose.width * .38 / (.3 * palmWorld.scale.x));
+    ring.scale.setScalar(handAnchor.pose.width * .38 / .3);
     return;
   }
   if (ring.parent !== world) world.add(ring);
@@ -1635,25 +1675,34 @@ function adaptQuality(rawDt, dt) {
 }
 function step(now) {
   const raw = Math.max(0, (now - last) / 1000);
+  const dt = Math.min(.05, raw);
   if (playing) {
     handTracker?.tick(now); handAnchor.fresh(now);
-    if (!handAnchor.ready && now - handAnchor.lastSeen > 5000 &&
-        (emitters.some(e => e.space === palmWorld) || (atomOnPalm && atomSequence.busy))) cancelPalmEffect();
     if (handWasReady !== handAnchor.ready) handState();
     if (handAnchor.ready) {
-      // Landmarks describe the current camera image; compose with its room pose.
-      const target = handAnchor.pose.position.clone().applyMatrix4(camera.matrixWorld);
-      const rotation = camera.quaternion.clone().multiply(handAnchor.pose.quaternion);
-      const blend = palmWorld.visible ? 1 - Math.exp(-Math.min(raw, .05) * 25) : 1;
-      palmWorld.position.lerp(target, blend); palmWorld.quaternion.slerp(rotation, blend);
+      const pose = handAnchor.pose;
+      const target = pose.worldPosition || pose.position.clone().applyMatrix4(camera.matrixWorld);
+      const rotation = pose.worldQuaternion || camera.quaternion.clone().multiply(pose.quaternion);
+      const blend = handGuide.visible ? 1 - Math.exp(-dt * 25) : 1;
+      handGuide.position.lerp(target, blend); handGuide.quaternion.slerp(rotation, blend);
+      handGuide.updateMatrixWorld(true);
+      if (!roomPaused()) palmMotion?.sample(target, rotation, handAnchor.lastSeen);
+    }
+    if (palmMotion && !roomPaused()) {
+      palmMotion.step(dt, now);
+      const blend = palmMotion.state === 'held' ? 1 - Math.exp(-dt * 25) : 1;
+      palmWorld.position.lerp(palmMotion.position, blend); palmWorld.quaternion.slerp(palmMotion.quaternion, blend);
       palmWorld.updateMatrixWorld(true);
+      for (const child of palmWorld.children) if (child.userData.contactShadow) {
+        child.visible = palmMotion.state === 'held' || palmMotion.position.y <= palmMotion.floorY + .01;
+      }
     }
     if (!atomSequence.busy && !emitters.some(e => e.ground && e.space === palmWorld)) handAnchor.unlock();
   }
   const trackingLost = roomPaused();
-  const dt = Math.min(.05, raw);
   world.visible = !trackingLost;
-  palmWorld.visible = playing && handAnchor.ready;
+  handGuide.visible = playing && handAnchor.ready && !trackingLost;
+  palmWorld.visible = playing && Boolean(palmMotion) && !trackingLost;
   last = now;
   const time = now / 1000;
   if (!playing) { look.yaw = Math.sin(time * .1) * .04; look.pitch = .14; attract(dt); }

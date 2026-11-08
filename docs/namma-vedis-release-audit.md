@@ -72,3 +72,25 @@ The tracker uses approximate responsive scale and an estimated floor plane,
 not scene meshing or real-world occlusion. Physical tracking can drift in dark
 or featureless views. The preceding startup optimizations remove extra waits;
 actual startup speed still needs on-phone measurement.
+
+
+## Automatic hand throwing update — November 8, 2026
+
+The palm no longer controls whether an active effect exists or its clock runs.
+Each placed hand object has an independent motion state. Tilting drops a running
+flower pot, spinner or wala; moving a bomb with a deliberate toss gives it a
+ballistic flight. Objects land upright and retain their original effect timer.
+Atom/Hukum/Lakshmi palm fuses are 3.2/2.8/2.4 seconds. Bombs burst at their current
+held, airborne or landed position, with Atom still gated by its completed tone.
+
+Camera pose is captured with the inference frame. A separate hand guide prevents
+reacquisition from moving a released object. All emitted particles remain in room
+space, and no scorch plane floats under an airborne burst. Brief hand loss is
+tolerated; sustained loss drops the object without cancelling its effect.
+
+51 automated checks pass, including all eight crackers dropping, fountain timer
+continuity, held/midair/floor bursts, noise rejection, camera-motion compensation,
+refresh-rate consistency, audio lock and worker camera ownership. The production
+Next build passes. These checks use real application logic with mocked drawing
+and camera input, not measured phone tracking. Physical Safari/Chrome acceptance
+still needs tilt/toss sensitivity, motion blur, floor alignment and GPU smoothness.

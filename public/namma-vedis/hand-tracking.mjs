@@ -1,9 +1,9 @@
 // Borrow the AR engine's existing video. Never request, replace or stop its
 // camera stream. One inference at a time, off-thread, with bounded input size.
-export function createHandTracking({ video, onResult, onLost, onError }) {
+export function createHandTracking({ video, onResult, onLost, onError, captureContext }) {
   let worker, active = false, loaded = false, paused = false, busy = false, epoch = 0, lastAt = -Infinity, lastVideo = -1;
   let bootTimer, workTimer, resolveBoot, rejectBoot;
-  let interval = 140;
+  let interval = 140, frameContext;
   const canvas = document.createElement('canvas');
   const ctx = canvas.getContext('2d', { alpha: false });
   const lose = () => onLost();
@@ -38,7 +38,7 @@ export function createHandTracking({ video, onResult, onLost, onError }) {
             clearTimeout(workTimer); busy = false;
             interval = data.result?.landmarks?.length ? 70 : 140;
             if (!paused && data.epoch === epoch && performance.now() - data.time < 350 &&
-                data.width === video.videoWidth && data.height === video.videoHeight) onResult(data.result, data.time);
+                data.width === video.videoWidth && data.height === video.videoHeight) onResult(data.result, data.time, frameContext);
             else lose();
           }
         };
@@ -51,6 +51,7 @@ export function createHandTracking({ video, onResult, onLost, onError }) {
       if (!active || !loaded || paused || busy || video.readyState < 2 || !video.videoWidth || !video.videoHeight || now - lastAt < interval || video.currentTime === lastVideo) return;
       busy = true; lastAt = now; lastVideo = video.currentTime;
       const width = video.videoWidth, height = video.videoHeight, frameEpoch = epoch;
+      frameContext = captureContext?.();
       const size = 512 / Math.max(width, height);
       canvas.width = Math.round(width * size); canvas.height = Math.round(height * size);
       try { ctx.drawImage(video, 0, 0, canvas.width, canvas.height); } catch (error) { fail(error); return; }

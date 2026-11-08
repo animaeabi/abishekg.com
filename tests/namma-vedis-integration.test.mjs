@@ -46,8 +46,8 @@ test('actual app: placement, new ground effects, release regressions and mixed-e
   let source = await readFile(path, 'utf8');
   source = source.replace("import * as THREE from 'three';", 'const THREE = globalThis.__nammaTestThree;');
   source = source.replace(/from '(\.\/[^']+)'/g, (_, p) => `from '${new URL(p, path).href}'`);
-  source += `\nexport const qa = { camera, world, palmWorld, handAnchor, ring, emitters, P, S, pulses, selected, atomSequence, placementGuide,
-    cancelPalmEffect, syncAudioPlayback, sparkMat, smokeMat, outHand, sHand, handState,
+  source += `\nexport const qa = { camera, world, palmWorld, handGuide, handAnchor, ring, emitters, P, S, pulses, selected, atomSequence, placementGuide,
+    get motion() { return palmMotion; }, cancelPalmEffect, syncAudioPlayback, sparkMat, smokeMat, outHand, sHand, handState,
     fireAt, setMode, updateCamera, updateRing, step, queueSkyWish, writeSky, scatterPaper, updateSmoke, sSize, smokeGeo, trackingState,
     flowerPot, sanguchakram, wala, WALAS, royalShow, peony, chrysanthemum, goldenRain, crackling, diamondBurst, launch, tone, noise,
     init() { playing = true; floorY = 0; worldTracking = { active: true, ready: true, hit: () => null }; },
@@ -250,32 +250,40 @@ test('actual app: placement, new ground effects, release regressions and mixed-e
     qa.selected.ground = 'flower'; qa.fireAt(195, 422);
     const floorPot = qa.world.getObjectByName('cracker-flower'), original = floorPot.position.clone();
     qa.palm(palm()); qa.simulateHand(.05); qa.updateRing(0);
-    assert.equal(elements.get('mode').textContent, 'Palm · Auto'); assert.equal(qa.ring.parent, qa.palmWorld); assert.equal(qa.ring.visible, true);
+    assert.equal(elements.get('mode').textContent, 'Palm · Auto'); assert.equal(qa.ring.parent === qa.handGuide, true); assert.equal(qa.ring.visible, true);
     qa.fireAt(195, 422); const handPot = qa.palmWorld.getObjectByName('cracker-flower');
     assert.ok(handPot); assert.equal(qa.ring.visible, false);
     assert.equal(qa.fireAt(195, 422), false, 'one active palm effect');
     qa.simulateHand(1.5);
     const before = handPot.getWorldPosition(new RealThree.Vector3());
-    const moved = palm(); moved.position.x = .25; qa.palm(moved); qa.simulateHand(.5);
+    const moved = palm();
+    for (let i = 1; i <= 10; i++) { moved.position.x = i * .025; qa.palm(moved); qa.simulateHand(.05); }
     assert.ok(handPot.getWorldPosition(new RealThree.Vector3()).distanceTo(before) > .2);
     assert.deepEqual(floorPot.position.toArray(), original.toArray());
-    assert.ok(qa.outHand.some(v => v === 1) && qa.outHand.some(v => v === 0));
+    assert.ok(qa.P.life.some(v => v > 0));
+    assert.ok(qa.P.hand.every(v => v === 0), 'emitted sparks stay in the room, independent of the hand');
     assert.equal(qa.sparkMat.uniforms.uPalm.value, qa.palmWorld.matrixWorld);
     assert.equal(qa.smokeMat.uniforms.uPalm.value, qa.palmWorld.matrixWorld);
     const handEmitter = qa.emitters.find(e => e.flower && e.space === qa.palmWorld);
     qa.handAnchor.invalidate(); qa.handState(); qa.simulate(2);
-    assert.equal(qa.palmWorld.visible, false); assert.equal(handEmitter.phase, 'fountain');
+    assert.equal(qa.palmWorld.visible, true); assert.equal(handEmitter.phase, 'fountain');
+    assert.equal(qa.motion.state, 'landed'); assert.equal(qa.palmWorld.position.y, 0);
+    assert.ok(qa.palmWorld.quaternion.angleTo(new RealThree.Quaternion()) < 1e-9);
     assert.equal(qa.ring.parent, qa.world); assert.equal(elements.get('mode').textContent, 'Floor · AR');
     assert.ok(qa.emitters.some(e => e.flower && e.space === qa.world), 'floor keeps its own lifetime');
     qa.palm(moved); qa.simulateHand(16); assert.equal(qa.emitters.some(e => e.ground), false);
     qa.cancelPalmEffect(); qa.handAnchor.invalidate(); qa.handState();
   });
 
-  await t.test('every floor cracker dispatches on the palm and releases its owned geometry', () => {
+  await t.test('every floor cracker dispatches on the palm, drops to the floor and releases its owned geometry', () => {
     for (const id of ['atom', 'sutli', 'lakshmi', 'flower', 'spinner', 'wala100', 'wala1000', 'wala10000']) {
       qa.init(); qa.palm(palm()); qa.simulateHand(.05); qa.selected.ground = id; qa.fireAt(195, 422);
       assert.ok(qa.emitters.some(e => e.ground && e.space === qa.palmWorld), id);
       if (id === 'wala10000') assert.equal(qa.palmWorld.getObjectByName('wala-10000').count, 10000);
+      qa.simulateHand(1.1);
+      const tilted = palm(); tilted.quaternion.multiply(new RealThree.Quaternion().setFromAxisAngle(new RealThree.Vector3(0, 0, 1), .5));
+      qa.palm(tilted); qa.simulateHand(.15); assert.equal(qa.motion.state, 'airborne', id);
+      qa.simulateHand(.9); assert.equal(qa.motion.state, 'landed', id); assert.equal(qa.palmWorld.position.y, 0);
       qa.simulateHand(id === 'wala10000' ? 40 : 20); t.mock.timers.tick(3000);
       assert.equal(qa.atomSequence.busy, false); assert.equal(qa.emitters.some(e => e.ground && e.space === qa.palmWorld), false, id);
       qa.cancelPalmEffect(); assert.ok(qa.palmWorld.children.every(o => o === qa.ring));
@@ -283,18 +291,56 @@ test('actual app: placement, new ground effects, release regressions and mixed-e
     }
   });
 
-  await t.test('palm audio pauses independently and prolonged hand loss cannot leave Atom locked', () => {
+  await t.test('hand loss drops the object, keeps audio running and waits for the complete Atom tail', () => {
     const context = () => ({ state: 'running', createGain: () => ({}),
       suspend() { this.state = 'suspended'; return Promise.resolve(); }, resume() { this.state = 'running'; return Promise.resolve(); }, close() { this.state = 'closed'; return Promise.resolve(); } });
-    qa.init(); qa.palm(palm()); const room = context(), hand = context(); qa.useAudio(room); qa.useHandAudio(hand);
-    qa.handAnchor.invalidate(); qa.handState(); assert.equal(room.state, 'running'); assert.equal(hand.state, 'suspended');
-    qa.palm(palm()); assert.equal(hand.state, 'running'); qa.useAudio(null); qa.useHandAudio(null);
-    qa.selected.ground = 'atom'; qa.fireAt(195, 422); assert.equal(qa.atomSequence.busy, true);
-    qa.handAnchor.invalidate(); qa.handState(); qa.simulate(5.1);
-    assert.equal(qa.atomSequence.busy, false); assert.equal(qa.emitters.some(e => e.space === qa.palmWorld), false);
-    assert.ok(qa.palmWorld.children.every(o => o === qa.ring));
-    qa.selected.ground = 'flower'; qa.camera.rotation.set(-.7, 0, 0); qa.camera.updateMatrixWorld(); qa.fireAt(195, 422);
-    assert.ok(qa.world.getObjectByName('cracker-flower'), 'floor placement is available after cancellation');
-    qa.simulate(20);
+    qa.init(); qa.palm(palm()); qa.simulateHand(.05); qa.selected.ground = 'atom'; qa.fireAt(195, 422);
+    const room = context(), hand = context(); qa.useAudio(room); qa.useHandAudio(hand);
+    qa.handAnchor.invalidate(); qa.handState(); assert.equal(room.state, 'running'); assert.equal(hand.state, 'running');
+    qa.useAudio(null); qa.useHandAudio(null); qa.simulate(1.2);
+    assert.equal(qa.motion.state, 'landed'); assert.equal(qa.atomSequence.phase, 'fuse');
+    qa.simulate(2.1); assert.equal(qa.atomSequence.phase, 'ringing');
+    assert.equal(qa.fireAt(195, 422), false); t.mock.timers.tick(2700); assert.equal(qa.atomSequence.busy, false);
+    qa.cancelPalmEffect(); qa.handAnchor.invalidate(); qa.handState();
+  });
+
+  await t.test('a flower pot drops on a small tilt without restarting its fountain and lands upright', () => {
+    qa.init(); qa.camera.position.set(0, 1.4, 0); qa.camera.rotation.set(0, 0, 0); qa.camera.updateMatrixWorld();
+    qa.palm(palm()); qa.simulateHand(.05); qa.selected.ground = 'flower'; qa.fireAt(195, 422);
+    qa.simulateHand(2); const fountain = qa.emitters.find(e => e.flower && e.space === qa.palmWorld);
+    const pot = qa.palmWorld.getObjectByName('cracker-flower'); assert.equal(fountain.phase, 'fountain');
+    const tilted = palm(); tilted.quaternion.multiply(new RealThree.Quaternion().setFromAxisAngle(new RealThree.Vector3(0, 0, 1), Math.PI / 8));
+    qa.palm(tilted); qa.simulateHand(.12); assert.equal(qa.motion.state, 'airborne');
+    assert.equal(fountain.phase, 'fountain'); assert.equal(qa.palmWorld.getObjectByName('cracker-flower'), pot);
+    qa.simulateHand(.6); assert.equal(qa.motion.state, 'landed'); assert.equal(qa.palmWorld.position.y, 0);
+    const landed = qa.palmWorld.position.clone(); const moved = palm(); moved.position.x = .3;
+    qa.palm(moved); qa.simulateHand(.4); assert.deepEqual(qa.palmWorld.position.toArray(), landed.toArray());
+    assert.ok(qa.palmWorld.quaternion.angleTo(new RealThree.Quaternion()) < 1e-9);
+    qa.simulateHand(7.4); assert.equal(fountain.phase, 'cooling', 'original burn clock continues through the fall');
+    qa.simulateHand(5); qa.cancelPalmEffect(); qa.handAnchor.invalidate(); qa.handState();
+  });
+
+  await t.test('a held bomb gets time to throw, then bursts in the hand if never released', () => {
+    qa.init(); qa.palm(palm()); qa.simulateHand(.05); qa.selected.ground = 'atom'; qa.fireAt(195, 422);
+    qa.simulateHand(2.5); assert.equal(qa.atomSequence.phase, 'fuse'); assert.equal(qa.motion.state, 'held');
+    qa.simulateHand(.75); assert.equal(qa.atomSequence.phase, 'ringing'); assert.equal(qa.motion.state, 'spent');
+    assert.ok(qa.palmWorld.position.y > .5); assert.equal(qa.palmWorld.getObjectByName('cracker-atom'), undefined);
+    assert.ok(qa.P.hand.every(v => v === 0));
+    assert.equal(qa.palmWorld.children.some(o => o.userData.contactShadow), false, 'no floating scorch under a hand burst');
+    t.mock.timers.tick(2700); qa.cancelPalmEffect(); qa.handAnchor.invalidate(); qa.handState();
+  });
+
+  await t.test('a late upward toss bursts midair at the moving bomb, then cannot follow a returning hand', () => {
+    qa.init(); qa.palm(palm()); qa.simulateHand(.05); qa.selected.ground = 'atom'; qa.fireAt(195, 422);
+    qa.simulateHand(2.8);
+    for (let i = 1; i <= 8; i++) { const pose = palm(); pose.position.y += i * .025; qa.palm(pose); qa.simulateHand(1 / 60); }
+    assert.equal(qa.motion.state, 'airborne'); const thrown = qa.palmWorld.position.clone();
+    qa.handAnchor.invalidate(); qa.handState(); qa.simulate(.32);
+    assert.equal(qa.atomSequence.phase, 'ringing'); assert.equal(qa.motion.state, 'spent');
+    const burst = qa.palmWorld.position.clone(); assert.ok(burst.y > thrown.y && burst.y > .6);
+    assert.ok(qa.S.life.some((v, i) => v > 0 && qa.S.hard[i] > .5 && qa.S.y[i] > .6), 'paper starts at the air burst');
+    qa.palm(palm()); qa.simulateHand(.2); assert.deepEqual(qa.palmWorld.position.toArray(), burst.toArray());
+    assert.ok(qa.S.groundY.every((v, i) => qa.S.life[i] <= 0 || v === 0), 'debris falls to the room floor');
+    t.mock.timers.tick(2700); qa.cancelPalmEffect(); qa.handAnchor.invalidate(); qa.handState();
   });
 });
