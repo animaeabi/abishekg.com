@@ -47,9 +47,9 @@ test('actual app: placement, new ground effects, release regressions and mixed-e
   source = source.replace("import * as THREE from 'three';", 'const THREE = globalThis.__nammaTestThree;');
   source = source.replace(/from '(\.\/[^']+)'/g, (_, p) => `from '${new URL(p, path).href}'`);
   source += `\nexport const qa = { camera, world, palmWorld, handGuide, handAnchor, ring, emitters, P, S, pulses, selected, atomSequence, placementGuide,
-    get motion() { return palmMotion; }, cancelPalmEffect, syncAudioPlayback, sparkMat, smokeMat, outHand, sHand, handState,
+    get motion() { return palmMotion; }, get lettering() { return activeLettering; }, get queuedWish() { return pendingSkyWish; }, cancelPalmEffect, syncAudioPlayback, sparkMat, smokeMat, outHand, sHand, handState,
     fireAt, setMode, updateCamera, updateRing, step, queueSkyWish, writeSky, scatterPaper, updateSmoke, sSize, smokeGeo, trackingState,
-    flowerPot, sanguchakram, wala, WALAS, royalShow, peony, chrysanthemum, goldenRain, crackling, diamondBurst, launch, tone, noise,
+    flowerPot, sanguchakram, wala, WALAS, royalShow, finale, rocket, twelveShot, peony, chrysanthemum, goldenRain, crackling, diamondBurst, launch, tone, noise,
     init() { playing = true; floorY = 0; worldTracking = { active: true, ready: true, hit: () => null }; },
     setFloor(y) { floorY = y; },
     setTracker(tracker) { worldTracking = tracker; },
@@ -185,7 +185,7 @@ test('actual app: placement, new ground effects, release regressions and mixed-e
     } finally { Math.random = random; }
   });
 
-  await t.test('settled paper lies flat and settled lettering stops uploading vertices', () => {
+  await t.test('settled paper lies flat while lettering animates on the GPU without vertex uploads', () => {
     qa.clearParticles(); qa.scatterPaper(1, .1, -2, 4, .1, 10, 0); qa.updateSmoke(1);
     assert.equal(qa.smokeGeo.instanceCount, 4);
     for (let i = 0; i < 4; i++) assert.equal(qa.sSize[i * 3 + 2], 2);
@@ -193,8 +193,67 @@ test('actual app: placement, new ground effects, release regressions and mixed-e
     assert.deepEqual(qa.S.x.slice(0, 4), positions);
     qa.writeSky(); qa.tick(1.3); const letters = qa.world.children.find(o => o.isPoints);
     const version = letters.geometry.attributes.position.version, fixed = letters.geometry.attributes.position.array.slice();
-    qa.tick(.4); assert.equal(letters.geometry.attributes.position.version, version); assert.deepEqual(letters.geometry.attributes.position.array, fixed);
+    const clock = letters.material.uniforms.uTime.value;
+    qa.tick(.4); assert.ok(letters.material.uniforms.uTime.value > clock);
+    assert.equal(letters.geometry.attributes.position.version, version); assert.deepEqual(letters.geometry.attributes.position.array, fixed);
     qa.simulate(15);
+  });
+
+  await t.test('all grand shows reserve the lettering for after their final shells and spark tails', () => {
+    for (const show of [() => qa.finale(), ...['hukum', 'thangam', 'diamond'].map(kind => () => qa.royalShow(kind))]) {
+      qa.init(); qa.clearParticles(); show();
+      let firstWriting = null;
+      for (let frame = 0; frame < 30 * 60; frame++) {
+        qa.simulate(1 / 60);
+        const lettering = qa.world.getObjectByName('sky-writing');
+        if (qa.emitters.some(e => e.sky)) assert.equal(lettering, undefined, 'no wording while a shell is climbing or its stars remain');
+        if (lettering && firstWriting === null) firstWriting = frame / 60;
+      }
+      assert.ok(firstWriting > 9 && firstWriting < 16, 'the finale follows the completed show, not its old six-second timer');
+      assert.equal(qa.lettering, null); assert.equal(qa.queuedWish, null);
+      assert.equal(qa.emitters.length, 0, 'writing, comets, and pending requests clean up');
+    }
+  });
+
+  await t.test('the wish button waits for long golden trails, deduplicates taps, and restarts after a new rocket', () => {
+    qa.init(); qa.clearParticles(); qa.camera.rotation.set(0, 0, 0); qa.camera.updateMatrixWorld();
+    const target = qa.camera.position.clone().add(new RealThree.Vector3(0, 30, -100));
+    qa.launch(target, qa.goldenRain, .5, true);
+    for (let i = 0; i < 5; i++) elements.get('wishBtn').handlers.click();
+    qa.simulate(5);
+    assert.equal(qa.lettering, null);
+    assert.equal(qa.emitters.filter(e => e.skyWish && !e.cancelled).length, 1);
+    qa.simulate(1.8); assert.ok(qa.lettering);
+    const old = qa.world.getObjectByName('sky-writing'), originalView = qa.lettering.view;
+    let disposed = 0; old.geometry.addEventListener('dispose', () => disposed++); old.material.addEventListener('dispose', () => disposed++);
+    qa.rocket(target);
+    assert.equal(qa.lettering, null); assert.equal(old.parent, null); assert.equal(disposed, 2);
+    qa.camera.rotation.y = 1; qa.camera.position.x += 3; qa.camera.updateMatrixWorld();
+    qa.simulate(4); assert.equal(qa.lettering, null, 'no writing while the new rocket still burns');
+    qa.simulate(2); assert.ok(qa.lettering); assert.equal(qa.lettering.view, originalView, 'restart stays at the original world location');
+    qa.simulate(8); assert.equal(qa.emitters.length, 0);
+  });
+
+  await t.test('sparks trace letters progressively, pause with tracking, dissipate and release GPU resources', () => {
+    qa.init(); qa.clearParticles(); qa.queueSkyWish(); qa.simulate(1 / 60);
+    const object = qa.world.getObjectByName('sky-writing'), { plan } = qa.lettering;
+    const births = object.geometry.attributes.aBirth.array;
+    let disposed = 0; object.geometry.addEventListener('dispose', () => disposed++); object.material.addEventListener('dispose', () => disposed++);
+    qa.simulate(.7);
+    assert.ok([...births].every(b => b > object.material.uniforms.uTime.value), 'rising comets precede any wording');
+    qa.simulate(1.5);
+    const clock = object.material.uniforms.uTime.value, appeared = [...births].filter(b => b <= clock).length;
+    assert.ok(appeared > 0 && appeared < births.length, 'only the traversed parts of each letter are lit');
+    const fixed = object.geometry.attributes.position.array.slice();
+    qa.setTracker({ active: true, ready: false, hit: () => null }); qa.simulate(2);
+    assert.equal(object.material.uniforms.uTime.value, clock, 'tracking loss must not skip writing or dissolution');
+    qa.setTracker({ active: true, ready: true, hit: () => null });
+    qa.camera.rotation.y += 1; qa.camera.position.x += 2; qa.camera.updateMatrixWorld();
+    qa.simulate(plan.dissolveAt - clock + .1);
+    assert.equal(qa.emitters.find(e => e.skyWriting).phase, 'dissolving');
+    assert.deepEqual(object.geometry.attributes.position.array, fixed, 'walking does not move the world-space letter targets');
+    assert.ok(object.material.uniforms.uTime.value > object.material.uniforms.uDissolve.value);
+    qa.simulate(3); assert.equal(qa.lettering, null); assert.equal(object.parent, null); assert.equal(disposed, 2);
   });
 
   await t.test('three fountains, three spinners, 10,000 wala and a grand show remain bounded', () => {

@@ -7,6 +7,7 @@ import { waitForWorldEngine, createWorldTracking } from './world-tracking.mjs';
 import { AtomSequence, playAtomAftertone } from './atom-aftertone.mjs';
 import { createCrackerModel, addCrackerLights } from './cracker-models.mjs';
 import { WALA_CONFIGS, createWalaLayout } from './wala-layout.mjs';
+import { createSkyWritingPlan, sampleStroke, skyWritingVertex, skyWritingFragment } from './sky-writing.mjs';
 import { createWalaBurn, walaIndexAt, renderWalaAudio, decorateWalaMaterial } from './wala-burn.mjs';
 import { HandAnchor, palmPose, handEffectScale } from './hand-anchor.mjs';
 import { HandObjectMotion, PALM_FUSES } from './hand-motion.mjs';
@@ -611,24 +612,28 @@ function shellStars(p, n, R, k, life, size, c1, c2, grav, flag, tl) {
   }
 }
 function peony(p, silent, scale = 1, origin = camera.position) {
+  noteSkyActivity(2.5);
   const [a, b] = pick(PAIRS), D = p.distanceTo(origin), R = D * rand(.25, .29) * scale;
   burstCommon(p, R, a, silent, scale);
   shellStars(p, 230 * scale, R, 2, 2.15, D * .0115, a, b, 9.8, F.LATE, 0);
   shellStars(p, 80 * scale, R * .45, 2.3, 1.5, D * .009, b, C.white, 9.8, F.LATE, 0);
 }
 function chrysanthemum(p, silent, scale = 1, origin = camera.position) {
+  noteSkyActivity(3.45);
   const [a, b] = pick(PAIRS), D = p.distanceTo(origin), R = D * rand(.28, .32) * scale;
   burstCommon(p, R, a, silent, 1.2 * scale);
   shellStars(p, 210 * scale, R, 1.9, 2.5, D * .0115, C.white, a, 9.8, F.TRAIL | F.LATE, .5);
   shellStars(p, 45, R * .3, 2.2, 1.3, D * .01, b, b, 6, F.TWINKLE | F.LATE, 0);
 }
 function goldenRain(p, silent, _scale = 1, origin = camera.position) {
+  noteSkyActivity(6.1);
   const D = p.distanceTo(origin), R = D * rand(.24, .27);
   const delay = burstCommon(p, R, C.gold, silent, .85);
   shellStars(p, 175, R, 1.45, 4.3, D * .0095, C.gold, C.charcoal, 9.8, F.TRAIL | F.LATE, 1.15);
   if (!silent) sfx.sizzle(3.6, panFor(p), delay + .2);
 }
 function crackling(p, silent, _scale = 1, origin = camera.position) {
+  noteSkyActivity(2.2);
   const D = p.distanceTo(origin), R = D * rand(.22, .26);
   const delay = burstCommon(p, R, C.silver, silent, .75);
   shellStars(p, 110, R, 2, 1.25, D * .009, C.gold, C.silver, 9.8, F.CRACKLE | F.LATE, 0);
@@ -636,12 +641,13 @@ function crackling(p, silent, _scale = 1, origin = camera.position) {
 }
 // Every shell climbs to where you tapped before it breaks, so you see the tail and hear the tube first.
 function launch(target, burst, T = rand(.6, .78), silent = false, view = VIEW()) {
+  noteSkyActivity();
   const start = view.origin.clone().lerp(target, .32); start.y = view.groundY ?? floorY;
   const size = target.distanceTo(view.origin) * .004;
   const pos = new THREE.Vector3(), last = start.clone();
   if (!silent) sfx.lift(panFor(target));
   let t = 0;
-  addEmitter({ update(dt) {
+  addEmitter({ sky: true, update(dt) {
     t += dt;
     const k = Math.min(1, t / T), e = 1 - (1 - k) * (1 - k);
     pos.lerpVectors(start, target, e);
@@ -656,6 +662,7 @@ function launch(target, burst, T = rand(.6, .78), silent = false, view = VIEW())
 }
 // A rocket is a small motor with a small payload: it burns out, coasts for a beat in the dark, then cracks open into a few heavy comets.
 function rocketBreak(p, origin = camera.position) {
+  noteSkyActivity(3.85);
   const D = p.distanceTo(origin), R = D * rand(.17, .2), c = pick([C.gold, C.gold, C.red, C.green, C.silver]);
   glowAt(p, R * 1.1, C.white, .09);
   lightScene(c, .08);
@@ -671,6 +678,7 @@ function rocketBreak(p, origin = camera.position) {
   }
 }
 function rocket(target) {
+  noteSkyActivity();
   const { r, origin, groundY } = VIEW();
   const start = origin.clone().lerp(target, .2); start.y = groundY;
   const pos = new THREE.Vector3(), last = start.clone();
@@ -678,7 +686,7 @@ function rocket(target) {
   const burn = rand(.95, 1.15), T = burn + rand(.32, .46), ember = [.8, .3, .06];
   sfx.fizz(burn + .2, panFor(target));
   let t = 0;
-  addEmitter({ update(dt) {
+  addEmitter({ sky: true, update(dt) {
     t += dt;
     const e = t < burn ? .8 * Math.pow(t / burn, 1.7) : .8 + .2 * (1 - Math.pow(1 - Math.min(1, (t - burn) / (T - burn)), 2));
     pos.lerpVectors(start, target, e).addScaledVector(r, Math.sin(Math.PI * e) * bow + Math.sin(t * 30 + wob) * .14 * (1 - e));
@@ -698,10 +706,11 @@ function rocket(target) {
 }
 const VIEW = () => ({ ...snapshotView(THREE, camera), groundY: floorY });
 function twelveShot(target) {
+  noteSkyActivity();
   const view = VIEW(), { r, origin } = view, dist = target.distanceTo(origin);
   const dir = target.clone().sub(origin).normalize();
   let t = 0, n = 0;
-  addEmitter({ update(dt) {
+  addEmitter({ sky: true, update(dt) {
     t += dt;
     while (n < 12 && n * .24 <= t) {
       const off = ((n % 2 ? 1 : -1) * (6 - Math.abs(n - 6))) * .05 + rand(-.015, .015);
@@ -713,13 +722,14 @@ function twelveShot(target) {
   } });
 }
 function finale() {
+  noteSkyActivity();
   const view = VIEW(), { f, r, u, origin } = view;
   const plan = [];
   for (let i = 0; i < 26; i++) plan.push({ at: i * .26 + rand(0, .16), fn: pick([peony, chrysanthemum, goldenRain, crackling]) });
   for (let i = 0; i < 7; i++) plan.push({ at: 7.1 + rand(0, .4), fn: chrysanthemum });
   plan.sort((a, b) => a.at - b.at);
   let t = 0, n = 0;
-  addEmitter({ finale: true, update(dt) {
+  addEmitter({ sky: true, finale: true, update(dt) {
     t += dt;
     while (n < plan.length && plan[n].at <= t) {
       const d = f.clone().addScaledVector(r, rand(-.34, .34)).addScaledVector(u, rand(-.28, .5)).normalize().multiplyScalar(rand(100, 140)).add(origin);
@@ -727,6 +737,7 @@ function finale() {
     }
     return n < plan.length;
   } });
+  queueSkyWish(0, 'Happy Diwali', view);
 }
 
 /* ---------- Ground crackers, as objects ---------- */
@@ -1186,7 +1197,7 @@ function fireAt(cx, cy) {
     else if (id === 'twelve') twelveShot(p);
     else if (id === 'rain') launch(p, goldenRain);
     else if (id === 'crackle') launch(p, crackling);
-    else if (id === 'finale' && !emitters.some((e) => e.finale)) { finale(); queueSkyWish(7.5); }
+    else if (id === 'finale' && !emitters.some((e) => e.finale)) { finale(); }
     return;
   }
   if (emitters.filter((e) => e.ground).length >= 7) return;
@@ -1592,70 +1603,121 @@ const wishParams = new URLSearchParams(location.search);
 let wishName = (wishParams.get('to') || '').slice(0, 24);
 let wishFrom = (wishParams.get('from') || 'Abishek').slice(0, 24);
 let wishMessage = (wishParams.get('wish') || '').slice(0, 100);
-let activeLettering = null;
-function queueSkyWish(delay = 0, title = 'Happy Diwali') {
-  const view = VIEW();
+let activeLettering = null, pendingSkyWish = null, skyTail = null;
+function noteSkyActivity(seconds = 0) {
+  if (!playing) return; // The landing-page background is not a running show.
+  if (activeLettering) {
+    const { title, view, cancel } = activeLettering;
+    cancel();
+    queueSkyWish(0, title, view);
+  }
+  if (seconds <= 0) return;
+  if (skyTail) { skyTail.remaining = Math.max(skyTail.remaining, seconds); return; }
+  const tail = { sky: true, remaining: seconds, update(dt) {
+    tail.remaining -= dt;
+    if (tail.remaining > 0) return true;
+    if (skyTail === tail) skyTail = null;
+    return false;
+  } };
+  skyTail = tail; addEmitter(tail);
+}
+function queueSkyWish(delay = 0, title = 'Happy Diwali', view = VIEW()) {
+  if (pendingSkyWish) pendingSkyWish.cancelled = true;
+  if (activeLettering) activeLettering.cancel();
   let elapsed = 0;
-  addEmitter({ update(dt) {
+  const queued = { skyWish: true, cancelled: false, update(dt) {
+    if (queued.cancelled) return false;
     elapsed += dt;
-    if (elapsed < delay) return true;
+    if (elapsed < delay || atomSequence.busy || emitters.some(e => e.sky)) return true;
+    if (pendingSkyWish === queued) pendingSkyWish = null;
     writeSky(title, view);
     return false;
-  } });
+  } };
+  pendingSkyWish = queued; addEmitter(queued);
+}
+// Keep personalized names, including non-Latin glyphs. Default letters have
+// actual pen strokes; unfamiliar glyphs use short, progressively lit scan lines.
+function rasterizeWishGlyph(character) {
+  const canvas = document.createElement('canvas'); canvas.width = 96; canvas.height = 128;
+  const x = canvas.getContext('2d');
+  x.font = '88px "Yatra One", sans-serif'; x.textAlign = 'center'; x.textBaseline = 'middle';
+  x.fillStyle = '#fff'; x.fillText(character, 48, 64, 88);
+  const pixels = x.getImageData(0, 0, 96, 128).data, strokes = [];
+  for (let y = 12; y < 116; y += 6) {
+    let start = -1;
+    for (let xx = 4; xx <= 92; xx += 2) {
+      const lit = xx < 92 && pixels[(y * 96 + xx) * 4 + 3] > 100;
+      if (lit && start < 0) start = xx;
+      if (!lit && start >= 0) { strokes.push([[start / 128, (116 - y) / 104], [xx / 128, (116 - y) / 104]]); start = -1; }
+    }
+  }
+  return strokes;
 }
 function writeSky(title = 'Happy Diwali', view = VIEW()) {
   if (activeLettering) activeLettering.cancel();
-  const glyph = document.createElement('canvas'); glyph.width = 1024; glyph.height = 180;
-  const x = glyph.getContext('2d');
-  let fontSize = 118;
-  x.font = `${fontSize}px "Yatra One", Georgia, serif`;
-  while (x.measureText(title).width > 940 && fontSize > 30) { fontSize -= 2; x.font = `${fontSize}px "Yatra One", Georgia, serif`; }
-  x.textAlign = 'center'; x.textBaseline = 'middle'; x.fillStyle = '#fff'; x.fillText(title, 512, 90);
-  const pixels = x.getImageData(0, 0, 1024, 180).data;
-  const { f, r, u, origin } = view, distance = 100;
-  const center = f.clone().multiplyScalar(distance).addScaledVector(u, 5).add(origin);
-  const worldWidth = 2 * distance * Math.tan(view.fov * DEG / 2) * view.aspect * .84;
-  const coordinates = [];
-  for (let y = 0; y < 180; y += 4) for (let xx = 0; xx < 1024; xx += 4) {
-    if (pixels[(y * 1024 + xx) * 4 + 3] > 110) {
-      const p = center.clone().addScaledVector(r, (xx - 512) / 1024 * worldWidth).addScaledVector(u, (90 - y) / 1024 * worldWidth);
-      coordinates.push(p.x, p.y, p.z);
+  const plan = createSkyWritingPlan(title, view, rasterizeWishGlyph);
+  const geo = new THREE.BufferGeometry();
+  geo.setAttribute('position', new THREE.BufferAttribute(plan.targets, 3));
+  geo.setAttribute('aBirth', new THREE.BufferAttribute(plan.births, 1));
+  geo.setAttribute('aSeed', new THREE.BufferAttribute(plan.seeds, 1));
+  geo.setAttribute('aDrift', new THREE.BufferAttribute(plan.drifts, 3));
+  const mat = new THREE.ShaderMaterial({ ...ADD, uniforms: {
+    uTime: { value: 0 }, uDissolve: { value: plan.dissolveAt }, uScale: sparkMat.uniforms.uScale,
+    uSize: { value: plan.unit * .065 }, uMotion: { value: reduceMotion ? .25 : 1 },
+  }, vertexShader: skyWritingVertex, fragmentShader: skyWritingFragment });
+  const lettering = new THREE.Points(geo, mat);
+  lettering.name = 'sky-writing'; lettering.renderOrder = 9; lettering.frustumCulled = false; world.add(lettering);
+  let t = 0, dead = false, trailBudget = 0;
+  const pos = new THREE.Vector3();
+  const cancel = () => {
+    if (dead) return;
+    dead = true; lettering.removeFromParent(); geo.dispose(); mat.dispose();
+    if (activeLettering?.cancel === cancel) activeLettering = null;
+  };
+  activeLettering = { title, view, plan, cancel };
+  const size = plan.unit * .045;
+  const tip = (p, count) => {
+    glowAt(p, size * 4, C.gold, .06);
+    for (let i = 0; i < count; i++) {
+      spawn(p.x, p.y, p.z, rand(-.7, .7), rand(-1.2, .3), rand(-.5, .5), rand(.18, .42), size * rand(.5, .9), C.white, C.amber, .5, 1.5, F.TWINKLE);
     }
-  }
-  const positions = new Float32Array(coordinates), target = positions.slice(), starts = new Float32Array(positions.length);
-  for (let i = 0; i < positions.length; i += 3) {
-    const offset = Math.sin(i * 2.15) * worldWidth * .35;
-    starts[i] = center.x - u.x * 18 + r.x * offset;
-    starts[i + 1] = center.y - u.y * 18 + r.y * offset;
-    starts[i + 2] = center.z - u.z * 18 + r.z * offset;
-  }
-  const geo = new THREE.BufferGeometry(); geo.setAttribute('position', new THREE.BufferAttribute(positions, 3));
-  const dot = document.createElement('canvas'); dot.width = dot.height = 32;
-  const d = dot.getContext('2d'), glow = d.createRadialGradient(16, 16, 0, 16, 16, 16);
-  glow.addColorStop(0, '#ffffff'); glow.addColorStop(.18, '#fff2c9'); glow.addColorStop(.5, '#ffb54299'); glow.addColorStop(1, '#ffb54200');
-  d.fillStyle = glow; d.fillRect(0, 0, 32, 32);
-  const texture = new THREE.CanvasTexture(dot);
-  const mat = new THREE.PointsMaterial({ color: 0xffd295, size: worldWidth / 250, map: texture, transparent: true, opacity: 0, depthTest: false, depthWrite: false, blending: THREE.AdditiveBlending, toneMapped: false });
-  const lettering = new THREE.Points(geo, mat); lettering.renderOrder = 9; lettering.frustumCulled = false; world.add(lettering);
-  let t = 0, dead = false, settled = false;
-  const cancel = () => { if (dead) return; dead = true; lettering.removeFromParent(); geo.dispose(); mat.dispose(); texture.dispose(); if (activeLettering?.cancel === cancel) activeLettering = null; };
-  activeLettering = { cancel };
-  addEmitter({ update(dt) {
+  };
+  noise({ dur: 1.15, vol: .045, f0: 1800, f1: 4200, type: 'bandpass', pan: panFor(plan.center), wet: .08, attack: .12 });
+  const emitter = { skyWriting: true, phase: 'rising', update(dt) {
     if (dead) return false;
-    t += dt;
-    if (!settled) {
-      const progress = reduceMotion ? 1 : clamp(t / 1.2, 0, 1), ease = 1 - Math.pow(1 - progress, 3);
-      for (let i = 0; i < positions.length; i++) positions[i] = starts[i] + (target[i] - starts[i]) * ease;
-      geo.attributes.position.needsUpdate = true;
-      settled = progress === 1;
+    t += dt; mat.uniforms.uTime.value = t;
+    emitter.phase = t < 1.5 ? 'rising' : t < plan.dissolveAt ? 'writing' : 'dissolving';
+    trailBudget += dt * (reduceMotion ? 18 : 36);
+    const count = Math.min(2, Math.floor(trailBudget)); trailBudget -= Math.floor(trailBudget);
+    for (const comet of plan.comets) {
+      const age = (t - comet.at) / comet.duration;
+      if (age < 0 || age > 1) continue;
+      pos.lerpVectors(comet.start, comet.end, 1 - Math.pow(1 - age, 2));
+      tip(pos, count);
     }
-    mat.opacity = Math.min(1, t / .4) * Math.min(1, (9 - t) / 1.5) * (.92 + .08 * Math.sin(t * 5));
-    if (t >= 9) { cancel(); return false; }
+    for (const stroke of plan.strokes) {
+      if (t >= stroke.start && t <= stroke.start + stroke.duration) {
+        sampleStroke(stroke.points, (t - stroke.start) / stroke.duration, pos);
+        tip(pos, count);
+      } else if (t >= stroke.start - .3 && t < stroke.start) {
+        // The lifted sparks fan out into moving writing tips, never a text card.
+        const comet = plan.comets[stroke.lane], travel = (t - stroke.start + .3) / .3;
+        pos.lerpVectors(comet.end, stroke.points[0], travel * travel * (3 - 2 * travel));
+        tip(pos, count);
+      }
+    }
+    if (t >= plan.end) {
+      cancel();
+      if (wishMessage) hint(wishMessage, 5000);
+      else if (wishParams.has('from') && wishFrom) hint(`With love, ${wishFrom}`, 4000);
+      return false;
+    }
     return true;
-  } });
-  hint(wishMessage || (wishFrom ? `இனிய தீபாவளி · With love, ${wishFrom}` : 'இனிய தீபாவளி'), 5000);
+  } };
+  addEmitter(emitter);
 }
 function diamondBurst(p, silent, _scale = 1, origin = camera.position) {
+  noteSkyActivity(4.4);
   const D = p.distanceTo(origin), R = D * .29;
   const delay = burstCommon(p, R, C.silver, silent, 1.2);
   shellStars(p, 260, R, 1.65, 3.2, D * .01, C.white, C.blue, 6, F.TRAIL | F.TWINKLE | F.LATE, .7);
@@ -1672,13 +1734,14 @@ function royalShow(kind) {
     const fn = kind === 'thangam' ? goldenRain : kind === 'diamond' ? diamondBurst : (q, silent, _scale, origin) => chrysanthemum(q, silent, 1.2, origin);
     plan.push({ at: i * .19, p, fn });
   }
-  let elapsed = 0, n = 0, written = false;
-  addEmitter({ finale: true, update(dt) {
+  noteSkyActivity();
+  let elapsed = 0, n = 0;
+  addEmitter({ sky: true, finale: true, update(dt) {
     elapsed += dt;
     while (n < plan.length && plan[n].at <= elapsed) { const shot = plan[n++]; launch(shot.p, shot.fn, .65, false, view); }
-    if (!written && elapsed > 6) { written = true; writeSky('Happy Diwali', view); }
-    return elapsed < 14;
+    return n < plan.length;
   } });
+  queueSkyWish(0, 'Happy Diwali', view);
 }
 $('royalBtn').addEventListener('click', () => {
   royalOpen = !royalOpen;
@@ -1689,7 +1752,7 @@ $('royalBtn').addEventListener('click', () => {
 $('wishBtn').addEventListener('click', () => {
   if (!playing || atomSequence.busy || (worldTracking?.active && !worldTracking.ready)) return;
   placementGuide.place(); ring.visible = false; ring.material.opacity = 0;
-  writeSky('Happy Diwali');
+  queueSkyWish();
 });
 
 
