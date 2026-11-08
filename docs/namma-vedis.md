@@ -52,9 +52,22 @@ and camera processing pause when the page is backgrounded.
 
 ## Validation
 
+Ground bodies use opaque, depth-writing, physically shaded geometry with rounded
+paper bodies, pressed caps, raised bindings and a curved fuse that burns back to
+the body. Floor light, contact shadows, sparks and smoke depth-test against these
+bodies; a glow no longer paints the camera image over the solid object.
+
+100, 1,000 and 10,000 wala options contain their stated instance counts. Each
+captures the camera's horizontal right vector once at placement. Longer strings
+fold into broad horizontal rows, with a connecting fuse. Burning reduces the
+instance draw count instead of uploading every transform again. Particle/audio
+events are batched per frame and only one 10,000 string can run at a time. The
+10,000 sequence takes approximately 32 seconds, excluding tracking pauses.
+
 - `node --test tests/namma-vedis-*.test.mjs`: orientation, world coordinates,
   camera translation, reticle lifecycle, tracking loss/recovery, startup failure,
-  audio completion gate, and CPU integration through the actual application.
+  audio completion gate, opaque model geometry and disposal, horizontal string
+  layout, all 10,000 instances and their lifecycle in the actual application.
 - `node --check public/namma-vedis/app.js`
 - `npm run build`: Next.js export plus local AR runtime assets.
 

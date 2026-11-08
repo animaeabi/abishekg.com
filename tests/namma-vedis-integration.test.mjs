@@ -81,4 +81,25 @@ test('actual app hides the ring, fixes debris height, and gates every launch unt
   qa.tick(1.1);
   const text = qa.world.children.find(o => o.isPoints);
   assert.ok(text); assert.ok(text.geometry.attributes.position.array[2] < -90, 'lettering remains in the original sky direction');
+
+  // The new large string is an actual 10,000-instance object, anchored sideways.
+  qa.setMode('ground'); qa.setFloor(0); qa.camera.position.set(0, 1.4, 0);
+  qa.camera.rotation.set(-.7, 0, 0); qa.camera.updateMatrixWorld();
+  qa.selected.ground = 'wala10000'; qa.fireAt(195, 422);
+  const string = qa.world.getObjectByName('wala-10000');
+  assert.ok(string?.isInstancedMesh); assert.equal(string.count, 10000);
+  assert.ok(string.material.every(m => m.isMeshStandardMaterial && !m.transparent && m.depthWrite));
+  assert.equal(qa.ring.visible, false);
+  const matrices = string.instanceMatrix.array.slice(), version = string.instanceMatrix.version;
+  const largeCount = qa.emitters.filter(e => e.largeWala).length;
+  assert.equal(qa.fireAt(195, 422), false); assert.equal(qa.emitters.filter(e => e.largeWala).length, largeCount);
+  qa.camera.position.set(2, 1.4, 1); qa.camera.rotation.y = 1; qa.camera.updateMatrixWorld();
+  qa.tick(1);
+  assert.ok(string.count < 10000 && string.count > 9700, 'burn advances through individual crackers');
+  assert.deepEqual(string.instanceMatrix.array, matrices, 'camera movement and burning never rewrite placed transforms');
+  assert.equal(string.instanceMatrix.version, version, 'no full matrix uploads during burning');
+  qa.tick(42);
+  assert.equal(qa.world.getObjectByName('wala-10000'), undefined);
+  assert.equal(qa.world.getObjectByName('wala-fuse-10000'), undefined);
+  assert.equal(qa.emitters.some(e => e.largeWala), false, 'completed string frees the next 10,000 launch');
 });

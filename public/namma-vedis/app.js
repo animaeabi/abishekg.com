@@ -5,6 +5,8 @@ import { hasOrientation, deviceQuaternion, modeForPitch } from './orientation.mj
 import { snapshotView, groundIntersection, applyWorldPose, PlacementGuide } from './world-space.mjs';
 import { waitForWorldEngine, createWorldTracking } from './world-tracking.mjs';
 import { AtomSequence, playAtomAftertone } from './atom-aftertone.mjs';
+import { createCrackerModel, addCrackerLights } from './cracker-models.mjs';
+import { WALA_CONFIGS, createWalaLayout } from './wala-layout.mjs';
 const atomSequence = new AtomSequence();
 let worldTracking = null, trackingStarting = false;
 const placementGuide = new PlacementGuide();
@@ -47,6 +49,7 @@ renderer.outputColorSpace = THREE.LinearSRGBColorSpace;
 renderer.setClearColor(0x000000, 1);
 const scene = new THREE.Scene();
 const world = new THREE.Group(); scene.add(world);
+addCrackerLights(scene);
 const camera = new THREE.PerspectiveCamera(70, 1, 0.05, 900);
 scene.add(camera);
 
@@ -92,8 +95,9 @@ backdrop.frustumCulled = false; backdrop.renderOrder = -20; backdrop.visible = f
 scene.add(backdrop);
 const skyLight = new THREE.Mesh(new THREE.PlaneGeometry(2, 2), new THREE.ShaderMaterial({
   ...ADD,
+  depthTest: true,
   uniforms: { ...shared, uC: { value: new THREE.Color(0, 0, 0) } },
-  vertexShader: 'void main(){ gl_Position = vec4(position.xy, 0.0, 1.0); }',
+  vertexShader: 'void main(){ gl_Position = vec4(position.xy, 0.999999, 1.0); }',
   fragmentShader: `${SAMPLE} uniform vec3 uC;
     void main(){ vec3 c = uHas > .5 ? room() * uC * 1.5 : uC * .1; gl_FragColor = vec4(c, 0.0); }`,
 }));
@@ -112,6 +116,7 @@ const pools = [];
 for (let i = 0; i < 8; i++) {
   const m = new THREE.Mesh(FLOOR_GEO, new THREE.ShaderMaterial({
     ...ADD,
+    depthTest: true,
     uniforms: { ...shared, uC: { value: new THREE.Color() } },
     vertexShader: 'varying vec2 vP; void main(){ vP = position.xz; gl_Position = projectionMatrix * modelViewMatrix * vec4(position, 1.0); }',
     fragmentShader: `${SAMPLE} uniform vec3 uC; varying vec2 vP;
@@ -158,6 +163,7 @@ function instanced(...attrs) {
 const sparkGeo = instanced(['iPos', outPos, 3], ['iVel', outVel, 3], ['iCol', outCol, 4], ['iSize', outSize, 3]);
 const sparkMat = new THREE.ShaderMaterial({
   ...ADD,
+  depthTest: true,
   uniforms: { uScale: { value: 1000 }, uMin: { value: 1.5 }, uRes: shared.uRes },
   vertexShader: `
     attribute vec3 iPos; attribute vec3 iVel; attribute vec4 iCol; attribute vec3 iSize;
@@ -273,7 +279,7 @@ const smokeTex = (() => {
 })();
 const smokeMat = new THREE.ShaderMaterial({
   uniforms: { uTex: { value: smokeTex } },
-  transparent: true, depthTest: false, depthWrite: false, toneMapped: false,
+  transparent: true, depthTest: true, depthWrite: false, toneMapped: false,
   blending: THREE.CustomBlending, blendEquation: THREE.AddEquation, blendSrc: THREE.OneFactor, blendDst: THREE.OneMinusSrcAlphaFactor, blendSrcAlpha: THREE.ZeroFactor, blendDstAlpha: THREE.OneFactor,
   vertexShader: `
     attribute vec3 iPos; attribute vec4 iCol; attribute vec3 iSize;
@@ -667,16 +673,12 @@ const TEX = {
   }),
 };
 const G = {
-  atom: new THREE.CylinderGeometry(.032, .032, .06, 20),
-  sutli: new THREE.SphereGeometry(.045, 22, 16),
-  lakshmi: new THREE.CylinderGeometry(.012, .012, .07, 12),
   wala: new THREE.CylinderGeometry(.007, .007, .04, 8),
   plane: new THREE.PlaneGeometry(2, 2).rotateX(-Math.PI / 2),
 };
 let ambLum = .4;
-const propLevel = (flame) => clamp(ambLum * 2.4 + flame, .2, 1.25);
 function contactShadow(x, z, radius, opacity, groundY = floorY) {
-  const mat = new THREE.MeshBasicMaterial({ map: TEX.shadow, transparent: true, opacity, depthWrite: false, depthTest: false, toneMapped: false });
+  const mat = new THREE.MeshBasicMaterial({ map: TEX.shadow, transparent: true, opacity, depthWrite: false, depthTest: true, toneMapped: false });
   const m = new THREE.Mesh(G.plane, mat);
   m.position.set(x, groundY + .003, z);
   m.scale.setScalar(radius);
@@ -684,14 +686,7 @@ function contactShadow(x, z, radius, opacity, groundY = floorY) {
   world.add(m);
   return m;
 }
-function makeProp(geom, tex, x, y, z, shadowR, groundY) {
-  const mat = new THREE.MeshBasicMaterial({ map: tex, toneMapped: false });
-  const m = new THREE.Mesh(geom, mat);
-  m.position.set(x, groundY + y, z);
-  world.add(m);
-  return { m, mat, shadow: contactShadow(x, z, shadowR, .55, groundY), lit(flame) { mat.color.setScalar(propLevel(flame)); } };
-}
-const dropProp = (p) => { p.mat.dispose(); p.m.removeFromParent(); p.shadow.material.dispose(); p.shadow.removeFromParent(); };
+const dropProp = (p) => { p.model.dispose(); p.shadow.material.dispose(); p.shadow.removeFromParent(); };
 function groundSmoke(x, y, z, c, n, size, rise) {
   for (let i = 0; i < n; i++) puff(x + rand(-.03, .03), y, z + rand(-.03, .03), rand(-.1, .1), rise * rand(.6, 1.2), rand(-.1, .1), rand(1.4, 2.8), size * rand(.7, 1.2), size * .55, c, [.22, .21, .2], rand(.09, .17), .6, -.05, .08);
 }
@@ -705,20 +700,22 @@ function scatterPaper(x, y, z, n, speed, life, groundY) {
 }
 // One routine, scaled by how much powder is packed inside.
 const BOMBS = {
-  atom: { geo: G.atom, tex: TEX.atom, h: .06, shadow: .08, fuse: 1.7, power: 1 },
-  sutli: { geo: G.sutli, tex: TEX.sutli, h: .09, shadow: .08, fuse: 1.2, power: .7 },
-  lakshmi: { geo: G.lakshmi, tex: TEX.lakshmi, h: .07, shadow: .04, fuse: .9, power: .32 },
+  atom: { kind: 'atom', shadow: .10, fuse: 1.7, power: 1 },
+  sutli: { kind: 'sutli', shadow: .09, fuse: 1.2, power: .7 },
+  lakshmi: { kind: 'lakshmi', shadow: .045, fuse: .9, power: .32 },
 };
 function bomb(p, b) {
   const groundY = p.y;
-  const { power, fuse, h } = b, prop = makeProp(b.geo, b.tex, p.x, h / 2, p.z, b.shadow, groundY), pan = panFor(p), R = .35 + .65 * power;
+  const { power, fuse } = b, model = createCrackerModel(b.kind, TEX), pan = panFor(p), R = .35 + .65 * power;
+  model.group.position.copy(p); world.add(model.group);
+  const prop = { model, shadow: contactShadow(p.x, p.z, b.shadow, .55, groundY) };
   sfx.fuse(fuse, pan);
   let t = 0;
   emitters.push({ ground: true, update(dt) {
     t += dt;
-    prop.lit(.05 + Math.random() * .08);
+    const tip = model.burn(t / fuse, .05 + Math.random() * .08);
     if (t < fuse) {
-      for (let k = 0; k < 5; k++) spawn(p.x, groundY + h + .012, p.z, rand(-1, 1), rand(.5, 2), rand(-1, 1), rand(.08, .24), .008, C.white, C.amber, 1.5, 4, F.TWINKLE, 0, .03, 0, groundY);
+      for (let k = 0; k < 5; k++) spawn(tip.x, tip.y, tip.z, rand(-1, 1), rand(.5, 2), rand(-1, 1), rand(.08, .24), .008, C.white, C.amber, 1.5, 4, F.TWINKLE, 0, .03, 0, groundY);
       floorGlow(p.x, p.z, [1, .55, .2], .12 + Math.random() * .1, .4, groundY);
       return true;
     }
@@ -752,54 +749,63 @@ function bomb(p, b) {
     return false;
   } });
 }
-// A wala is laid straight out ahead of you, so it runs up the screen, and burns from the far end back towards you.
-const WALAS = {
-  wala100: { n: 64, length: 1.1, waves: 2, amp: .04, gap: [.022, .062], paper: 2 },
-  wala1000: { n: 260, length: 2, waves: 4, amp: .09, gap: [.012, .036], paper: 1 },
-};
+// All strings run across the phone's X axis at placement, then stay in the world.
+const WALAS = WALA_CONFIGS;
 function wala(p, w) {
-  const groundY = p.y;
-  const r = new THREE.Vector3(1, 0, 0).applyQuaternion(camera.quaternion); r.y = 0; r.normalize();
-  const f = new THREE.Vector3(-r.z, 0, r.x), n = w.n, pts = [], mat = new THREE.MeshBasicMaterial({ map: TEX.wala, toneMapped: false });
-  const inst = new THREE.InstancedMesh(G.wala, mat, n), dummy = new THREE.Object3D(), pan = panFor(p);
-  const ahead = -((p.x - camera.position.x) * f.x + (p.z - camera.position.z) * f.z), shift = Math.max(0, .6 + w.length / 2 - ahead); // keep the near end in front of the phone
+  const groundY = p.y, n = w.n, large = n === 10000;
+  const { points: pts, cordPoints, right, forward, perRow } = createWalaLayout(p, camera.quaternion, w);
+  const mat = new THREE.MeshStandardMaterial({ map: TEX.wala, roughness: .86, toneMapped: false });
+  const cap = new THREE.MeshStandardMaterial({ color: 0xcba876, roughness: .96, toneMapped: false });
+  const inst = new THREE.InstancedMesh(G.wala, [mat, cap, cap], n), dummy = new THREE.Object3D();
+  inst.name = `wala-${n}`;
+  const up = new THREE.Vector3(0, 1, 0);
   for (let i = 0; i < n; i++) {
-    const u = i / (n - 1), s = (u - .5) * w.length - shift, o = Math.sin(u * TAU * w.waves) * w.amp;
-    pts.push(new THREE.Vector3(p.x + f.x * s + r.x * o, groundY, p.z + f.z * s + r.z * o));
-  }
-  for (let i = 0; i < n; i++) {
-    const a = pts[Math.max(0, i - 1)], b = pts[Math.min(n - 1, i + 1)];
-    dummy.position.set(pts[i].x, groundY + .009, pts[i].z);
-    dummy.rotation.set(Math.PI / 2, 0, Math.atan2(a.x - b.x, b.z - a.z) + (i % 2 ? .95 : -.95));
-    dummy.scale.setScalar(1);
+    dummy.position.copy(pts[i]);
+    dummy.quaternion.setFromUnitVectors(up, forward.clone().multiplyScalar(i % 2 ? 1 : -1).addScaledVector(right, .25).normalize());
+    dummy.scale.setScalar(w.scale);
     dummy.updateMatrix();
-    inst.setMatrixAt(i, dummy.matrix);
+    // Reverse order lets the burn front reduce the draw count without uploading
+    // a 10,000-instance matrix buffer again on every frame.
+    inst.setMatrixAt(n - 1 - i, dummy.matrix);
   }
+  inst.instanceMatrix.needsUpdate = true;
   inst.frustumCulled = false;
   world.add(inst);
-  mat.color.setScalar(propLevel(0));
-  let t = 0, i = 0, cursor = .35;
-  const times = pts.map(() => { const at = cursor; cursor += Math.random() < .08 ? rand(.1, .22) : rand(w.gap[0], w.gap[1]); return at; });
-  emitters.push({ ground: true, update(dt) {
+  const cordGeo = new THREE.TubeGeometry(new THREE.CatmullRomCurve3(cordPoints), cordPoints.length * 2, .0015 * w.scale, 5, false);
+  const cordMat = new THREE.MeshStandardMaterial({ color: 0xb39565, roughness: .97, toneMapped: false });
+  const cord = new THREE.Mesh(cordGeo, cordMat); cord.name = `wala-fuse-${n}`; world.add(cord);
+  const cordCount = cordGeo.index.count;
+  let t = 0, i = 0, cursor = .45, lastSound = -1, lastSmoke = -1;
+  const times = pts.map((_, k) => {
+    if (k > 0 && k % perRow === 0) cursor += .06;
+    const at = cursor; cursor += rand(w.gap[0], w.gap[1]); return at;
+  });
+  emitters.push({ ground: true, largeWala: large, update(dt) {
     t += dt;
-    while (i < n && times[i] <= t) {
-      const q = pts[i], big = i % 24 === 23; // every so often one packed heavier than the rest
-      dummy.scale.setScalar(.0001);
-      dummy.position.set(q.x, groundY, q.z);
-      dummy.updateMatrix();
-      inst.setMatrixAt(i, dummy.matrix);
-      inst.instanceMatrix.needsUpdate = true;
-      sfx.pop(pan + rand(-.1, .1), rand(0, .012), big ? 1.5 : rand(.65, 1));
-      glowAt({ x: q.x, y: groundY + .04, z: q.z }, big ? .6 : .34, C.white, .06);
-      floorPulse(q.x, q.z, [1, .72, .4], big ? 1.3 : .7, 1.1, 12, groundY);
-      lightScene([1, .75, .45], big ? .16 : .07);
-      for (let k = 0; k < 14; k++) { const d = randDir(), v = rand(1.5, 4.6); spawn(q.x, groundY + .04, q.z, d[0] * v, Math.abs(d[1]) * v, d[2] * v, rand(.1, .3), .012, C.white, C.amber, 2.2, 7, F.BOUNCE, 0, .03, 0, groundY); }
-      scatterPaper(q.x, groundY + .03, q.z, w.paper, 1.4, 11, groundY);
-      if (i % 3 === 0) groundSmoke(q.x, groundY + .06, q.z, [.5, .38, .24], 1, .1, .5);
-      if (i % 6 === 0) vibrate(7);
-      i++;
+    const start = i;
+    while (i < n && times[i] <= t) i++;
+    if (i > start) {
+      inst.count = n - i;
+      const burnt = Math.floor(cordCount * i / n / 30) * 30;
+      cordGeo.setDrawRange(burnt, cordCount - burnt);
+      // Represent simultaneous pops with bounded particles/audio, independent
+      // of how many crackers elapsed in a slow frame. Every body still burns.
+      const samples = Math.min(6, i - start);
+      for (let j = 0; j < samples; j++) {
+        const at = start + Math.floor((i - start - 1) * (samples === 1 ? 1 : j / (samples - 1))), q = pts[at];
+        for (let k = 0; k < (large ? 5 : 12); k++) { const d = randDir(), v = rand(1.5, 4.6); spawn(q.x, groundY + .04, q.z, d[0] * v, Math.abs(d[1]) * v, d[2] * v, rand(.1, .3), .012, C.white, C.amber, 2.2, 7, F.BOUNCE, 0, .03, 0, groundY); }
+        if (!large || j === samples - 1) scatterPaper(q.x, groundY + .03, q.z, w.paper, 1.4, 11, groundY);
+      }
+      const q = pts[i - 1], big = i === n || Math.floor(i / 24) !== Math.floor(start / 24);
+      if (t - lastSound >= .035 || i === n) {
+        sfx.pop(panFor(q), 0, big ? 1.25 : rand(.65, 1)); lastSound = t;
+      }
+      glowAt({ x: q.x, y: groundY + .04, z: q.z }, big ? .5 : .3, C.white, .06);
+      floorPulse(q.x, q.z, [1, .72, .4], big ? 1 : .6, .9, 12, groundY);
+      lightScene([1, .75, .45], big ? .12 : .06);
+      if (t - lastSmoke >= .12) { groundSmoke(q.x, groundY + .06, q.z, [.5, .38, .24], 1, .1, .5); vibrate(7); lastSmoke = t; }
     }
-    if (i >= n) { inst.removeFromParent(); inst.dispose(); mat.dispose(); return false; }
+    if (i >= n) { inst.removeFromParent(); inst.dispose(); mat.dispose(); cap.dispose(); cord.removeFromParent(); cordGeo.dispose(); cordMat.dispose(); return false; }
     return true;
   } });
 }
@@ -817,10 +823,11 @@ const ICONS = {
   lakshmi: '<rect x="8" y="9" width="8" height="12" rx="1"/><path d="M12 9V5c0-1.5 2-2 3-1"/>',
   wala100: '<path d="M2 14c3-5 5 3 8-1s5 3 8-1 3-1 4 0"/><path d="M5 9l1 3M10 9l.5 3M15 8l.5 3M20 8l-.5 3"/>',
   wala1000: '<path d="M2 7c3-4 5 2 8-1s5 2 8-1 3-1 4 0"/><path d="M2 13c3-4 5 2 8-1s5 2 8-1 3-1 4 0"/><path d="M2 19c3-4 5 2 8-1s5 2 8-1 3-1 4 0"/>',
+  wala10000: '<path d="M2 6h17a2 2 0 0 1 0 4H5a2 2 0 0 0 0 4h14a2 2 0 0 1 0 4H2"/><path d="M7 4v4m5-4v4m5 4v4m-5-4v4M7 16v4m5-4v4"/>',
 };
 const KINDS = {
   sky: [['rocket', 'Tiger Rocket'], ['shot', 'Sky shot'], ['rain', 'Golden rain'], ['crackle', 'Crackling'], ['twelve', '12 shot'], ['finale', 'Alapparai']],
-  ground: [['atom', 'Atom bomb'], ['sutli', 'Hukum Bomb'], ['lakshmi', 'Lakshmi'], ['wala100', '100 wala'], ['wala1000', '1000 wala']],
+  ground: [['atom', 'Atom bomb'], ['sutli', 'Hukum Bomb'], ['lakshmi', 'Lakshmi'], ['wala100', '100 wala'], ['wala1000', '1,000 wala'], ['wala10000', '10,000 wala']],
 };
 const selected = { sky: 'rocket', ground: 'atom', royal: 'hukum' };
 let royalOpen = false;
@@ -894,6 +901,7 @@ function fireAt(cx, cy) {
     return;
   }
   if (emitters.filter((e) => e.ground).length >= 7) return;
+  if (id === 'wala10000' && emitters.some((e) => e.largeWala)) { hint('Let this 10,000 wala finish first.', 2000); return false; }
   const spot = placementPoint(cx, cy);
   if (!spot) { hint("Move slowly and aim at a nearby surface.", 2500); return false; }
   placementGuide.place();
