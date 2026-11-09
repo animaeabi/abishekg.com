@@ -19,10 +19,10 @@ test('actual app: placement, new ground effects, release regressions and mixed-e
       appendChild(child) { this.children.push(child); }, closest: () => null,
     };
   }
-  const elements = new Map(), events = new Map();
+  const elements = new Map(), events = new Map(), documentEvents = new Map();
   const onEvent = (name, callback) => { if (!events.has(name)) events.set(name, []); events.get(name).push(callback); };
   const doc = { getElementById(id) { if (!elements.has(id)) elements.set(id, element()); return elements.get(id); },
-    createElement: element, addEventListener: noop };
+    createElement: element, addEventListener(name, callback) { documentEvents.set(name, callback); } };
   const properties = new WeakMap();
   class Renderer {
     capabilities = { isWebGL2: true };
@@ -47,7 +47,7 @@ test('actual app: placement, new ground effects, release regressions and mixed-e
   source = source.replace("import * as THREE from 'three';", 'const THREE = globalThis.__nammaTestThree;');
   source = source.replace(/from '(\.\/[^']+)'/g, (_, p) => `from '${new URL(p, path).href}'`);
   source += `\nexport const qa = { camera, world, skyWorld, skyTracking, palmWorld, handGuide, handAnchor, ring, emitters, P, S, pulses, selected, atomSequence, placementGuide,
-    get motion() { return palmMotion; },
+    get pointerDown() { return Boolean(press); }, get motion() { return palmMotion; },
     sensor(enabled, stale = false) { gyro = enabled; orient.ok = enabled; orient.a = 0; orient.b = 140; orient.g = 0; orient.time = performance.now() - (stale ? 1000 : 0); if (stale) skyTracking.invalidateMotion(performance.now() - 500); },
     useSkyAudio(context) { skyAudio = context ? { actx: context, master: context.createGain() } : null; }, get lettering() { return activeLettering; }, get queuedWish() { return pendingSkyWish; }, cancelPalmEffect, syncAudioPlayback, sparkMat, smokeMat, outHand, sHand, handState,
     fireAt, setMode, updateCamera, updateRing, step, queueSkyWish, writeSky, scatterPaper, updateSmoke, sSize, smokeGeo, trackingState,
@@ -455,6 +455,51 @@ test('actual app: placement, new ground effects, release regressions and mixed-e
     assert.equal(qa.fireAt(195, 200), false);
     qa.sensor(false); qa.updateCamera(1 / 60); assert.equal(qa.fireAt(195, 200), false);
     qa.useAudio(null); qa.useSkyAudio(null); tracker.ready = true; qa.trackingState(true); qa.simulate(20);
+  });
+
+  await t.test('rapid tapping cannot stack dozens of twelve-shot producers', () => {
+    qa.init(); qa.camera.rotation.set(.8, 0, 0); qa.camera.updateMatrixWorld(); qa.setMode('sky'); qa.selected.sky = 'twelve';
+    qa.simulate(1);
+    for (let i = 0; i < 40; i++) qa.fireAt(195, 200);
+    const producers = qa.emitters.filter(e => e.sky).length;
+    qa.simulate(12);
+    assert.ok(producers <= 3, `40 simultaneous taps created ${producers} sky producers`);
+  });
+
+  await t.test('backgrounding cancels a held launch instead of restarting it on return', () => {
+    qa.init(); qa.camera.rotation.set(.8, 0, 0); qa.camera.updateMatrixWorld(); qa.setMode('sky'); qa.selected.sky = 'shot';
+    qa.setTracker({ active: true, ready: true, pause() { this.ready = false; }, resume() { this.ready = true; } });
+    const e = { pointerId: 99, pointerType: 'touch', clientX: 195, clientY: 200, target: elements.get('stage'), preventDefault() {} };
+    elements.get('stage').handlers.pointerdown(e); assert.equal(qa.pointerDown, true);
+    doc.hidden = true; documentEvents.get('visibilitychange')();
+    const retainedPress = qa.pointerDown;
+    doc.hidden = false; documentEvents.get('visibilitychange')();
+    elements.get('stage').handlers.pointercancel({ ...e, type: 'pointercancel' }); qa.simulate(10);
+    assert.equal(retainedPress, false, 'a press survives backgrounding and can auto-launch without a new tap');
+  });
+
+  await t.test('two-finger control toggle does not fire; a normal touch release fires exactly once', () => {
+    qa.init(); qa.camera.rotation.set(.8, 0, 0); qa.camera.updateMatrixWorld(); qa.setMode('sky'); qa.selected.sky = 'shot'; qa.simulate(1);
+    const stage = elements.get('stage'), event = id => ({ pointerId: id, pointerType: 'touch', clientX: 195, clientY: 200, target: stage, preventDefault() {} });
+    const count = qa.emitters.length;
+    stage.handlers.pointerdown(event(1)); stage.handlers.pointerdown(event(2));
+    stage.handlers.pointerup({ ...event(1), type: 'pointerup' }); stage.handlers.pointerup({ ...event(2), type: 'pointerup' });
+    assert.equal(qa.emitters.length, count, 'recording gesture cannot ignite a cracker');
+    elements.get('showBtn').handlers.click();
+    stage.handlers.pointerdown(event(3)); assert.equal(qa.emitters.length, count);
+    stage.handlers.pointerup({ ...event(3), type: 'pointerup' });
+    assert.equal(qa.emitters.length, count + 1); qa.simulate(10);
+  });
+
+  await t.test('sustained sky tap spam stays bounded and releases every producer after input stops', () => {
+    qa.init(); qa.camera.rotation.set(.8, 0, 0); qa.camera.updateMatrixWorld(); qa.setMode('sky'); qa.selected.sky = 'twelve';
+    let peak = 0;
+    for (let i = 0; i < 200; i++) {
+      qa.fireAt(195, 200); qa.simulate(.1);
+      peak = Math.max(peak, qa.emitters.filter(e => e.sky).length);
+    }
+    qa.simulate(12); assert.ok(peak <= 27, `peak sky producers: ${peak}`); assert.equal(qa.emitters.length, 0);
+    t.diagnostic(`Audit: 200 taps over 20 simulated seconds; peak sky producers ${peak}; zero after completion.`);
   });
 
 });

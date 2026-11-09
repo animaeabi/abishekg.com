@@ -122,3 +122,13 @@ test('a rejected AR camera start reports failure and releases pipeline resources
   assert.equal(tracker.active, false); assert.equal(tracker.ready, false);
   assert.equal(stopped && cleared, true);
 });
+
+
+test('singular projection and overflowing quaternion cannot corrupt a valid tracked camera', () => {
+  const camera = new THREE.PerspectiveCamera(70, .5); camera.position.set(1, 2, 3); camera.updateMatrixWorld();
+  const before = camera.matrixWorld.toArray(), projection = camera.projectionMatrix.toArray();
+  const singular = new Array(16).fill(0); singular[0] = singular[5] = 1;
+  assert.equal(applyWorldPose(camera, { position: { x: 0, y: 0, z: 0 }, rotation: { x: 0, y: 0, z: 0, w: 1 }, intrinsics: singular }), false);
+  assert.equal(applyWorldPose(camera, { position: { x: 0, y: 0, z: 0 }, rotation: { x: 1e308, y: 1e308, z: 0, w: 1e308 }, intrinsics: projection }), false);
+  assert.deepEqual(camera.matrixWorld.toArray(), before); assert.deepEqual(camera.projectionMatrix.toArray(), projection);
+});

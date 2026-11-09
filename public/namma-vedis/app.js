@@ -728,7 +728,7 @@ const twelveShot = skyEffect(function (target) {
   const view = VIEW(), { r, origin } = view, dist = target.distanceTo(origin);
   const dir = target.clone().sub(origin).normalize();
   let t = 0, n = 0;
-  addEmitter({ sky: true, update(dt) {
+  addEmitter({ sky: true, barrage: true, update(dt) {
     t += dt;
     while (n < 12 && n * .24 <= t) {
       const off = ((n % 2 ? 1 : -1) * (6 - Math.abs(n - 6))) * .05 + rand(-.015, .015);
@@ -1199,14 +1199,22 @@ surfaceBtn.addEventListener('click', () => {
   placementGuide.select();
 });
 
+let lastSkyTap = -Infinity;
 function fireAt(cx, cy) {
-  if (atomSequence.busy) return false;
+  if (document.hidden || !Number.isFinite(cx) || !Number.isFinite(cy) || atomSequence.busy) return false;
   const onPalm = playing && handAnchor.ready;
   if (onPalm) setMode('ground');
   if (worldTracking?.active && (mode === 'sky' ? !skyAvailable() : !worldTracking.ready)) return false;
   if (onPalm && emitters.some(e => e.ground && e.space === palmWorld)) { hint('Let this palm cracker finish first.', 2000); return false; }
   const ray = rayAt(cx, cy), id = selected[mode === 'sky' && royalOpen ? 'royal' : mode];
   if (mode === 'sky') {
+    // Bound input producers as well as particle buffers: rapid twelve-shot taps
+    // otherwise schedule hundreds of future shells and audio voices.
+    const interval = id === 'twelve' ? 650 : 140;
+    if (last - lastSkyTap < interval || emitters.filter(e => e.sky && !e.skyTail).length >= 18 ||
+        (id === 'twelve' && emitters.filter(e => e.barrage).length >= 2) ||
+        ((royalOpen || id === 'finale') && emitters.some(e => e.finale))) return false;
+    lastSkyTap = last;
     placementGuide.place(); ring.visible = false; ring.material.opacity = 0;
     const p = skyWorld.worldToLocal(ray.clone().multiplyScalar(rand(100, 145)).add(camera.position));
     if (royalOpen) { royalShow(id); return; }
@@ -1341,7 +1349,7 @@ function trackingState(ready) {
   skyMotionReady = !ready && Boolean(skyTracking.canBridge(motionState()));
   $('trackingStatus').hidden = ready || !worldTracking?.active;
   $('trackingStatus').textContent = ready ? '' : 'Aim at a detailed patch of floor and move gently sideways.';
-  if (!ready) { ring.visible = false; ring.material.opacity = 0; }
+  if (!ready) { clearInput(); ring.visible = false; ring.material.opacity = 0; }
   syncAudioPlayback();
   updateModeLabel();
 }
@@ -1470,6 +1478,8 @@ function autoDim(dt) {
 let playing = false, press = null, uiHidden = false;
 const REPEAT = .45;
 const fingers = new Map();
+function clearInput() { press = null; fingers.clear(); }
+addEventListener('blur', clearInput);
 function toggleUi(force) {
   uiHidden = force === undefined ? !uiHidden : force;
   $('ui').hidden = uiHidden;
@@ -1487,7 +1497,9 @@ stage.addEventListener('pointerdown', (e) => {
   }
   press = { id: e.pointerId, x: e.clientX, y: e.clientY, sx: e.clientX, sy: e.clientY, dragged: false, t: 0, fired: false, mouse: e.pointerType === 'mouse' };
   try { stage.setPointerCapture(e.pointerId); } catch (err) { /* ignore */ }
-  if (worldTracking?.active || gyro) { fireAt(e.clientX, e.clientY); press.fired = true; hintEl.classList.remove('show'); }
+  // Commit touch taps on release, so a second finger can cancel the launch
+  // and toggle recording controls without accidentally igniting a cracker.
+  if (e.pointerType !== 'touch' && (worldTracking?.active || gyro)) { fireAt(e.clientX, e.clientY); press.fired = true; hintEl.classList.remove('show'); }
 });
 stage.addEventListener('pointermove', (e) => {
   if (!press || e.pointerId !== press.id) return;
@@ -1502,14 +1514,15 @@ stage.addEventListener('pointermove', (e) => {
 function endPress(e) {
   fingers.delete(e.pointerId);
   if (!press || e.pointerId !== press.id) return;
-  if (!gyro && !press.dragged && !press.fired && e.type === 'pointerup') { fireAt(e.clientX, e.clientY); hintEl.classList.remove('show'); }
+  if (!press.dragged && !press.fired && e.type === 'pointerup') { fireAt(e.clientX, e.clientY); hintEl.classList.remove('show'); }
   press = null;
 }
 stage.addEventListener('pointerup', endPress);
 stage.addEventListener('pointercancel', endPress);
+stage.addEventListener('lostpointercapture', endPress);
 stage.addEventListener('contextmenu', (e) => e.preventDefault());
 function holdRepeat(dt) {
-  if (atomSequence.busy || !press || mode !== 'sky' || royalOpen || ['finale', 'twelve'].includes(selected.sky) || (!gyro && press.dragged)) return;
+  if (document.hidden || atomSequence.busy || !press || mode !== 'sky' || royalOpen || ['finale', 'twelve'].includes(selected.sky) || (!gyro && press.dragged)) return;
   press.t += dt;
   if (press.t >= REPEAT) { press.t = 0; press.fired = true; fireAt(press.x, press.y); }
 }
@@ -1526,6 +1539,7 @@ $('showBtn').addEventListener('click', () => toggleUi(false));
 
 // Silence the moment the page isn't on screen.
 document.addEventListener('visibilitychange', () => {
+  clearInput();
   skyTracking.invalidateMotion(performance.now()); orient.ok = false; skyMotionReady = false;
   if (document.hidden) worldTracking?.pause(); else worldTracking?.resume();
   if (document.hidden) handTracker?.pause(); else handTracker?.resume();
@@ -1606,6 +1620,7 @@ modeEl.addEventListener('click', () => {
   look.pitch = mode === 'sky' ? -.75 : .6;
 });
 addEventListener('pagehide', (event) => {
+  clearInput();
   skyTracking.invalidateMotion(performance.now()); orient.ok = false; skyMotionReady = false;
   if (event.persisted) handTracker?.pause(); else handTracker?.stop();
   if (event.persisted) worldTracking?.pause();
@@ -1648,7 +1663,7 @@ function noteSkyActivity(seconds = 0) {
   }
   if (seconds <= 0) return;
   if (skyTail) { skyTail.remaining = Math.max(skyTail.remaining, seconds); return; }
-  const tail = { sky: true, remaining: seconds, update(dt) {
+  const tail = { sky: true, skyTail: true, remaining: seconds, update(dt) {
     tail.remaining -= dt;
     if (tail.remaining > 0) return true;
     if (skyTail === tail) skyTail = null;

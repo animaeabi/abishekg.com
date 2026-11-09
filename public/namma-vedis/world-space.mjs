@@ -17,15 +17,22 @@ export function groundIntersection(THREE, origin, ray, height, maxDistance = 8) 
   return new THREE.Vector3().copy(origin).addScaledVector(ray, distance);
 }
 
+const candidateProjections = new WeakMap();
 export function applyWorldPose(camera, reality) {
   if (!reality) return false;
   const { position: p, rotation: q, intrinsics: projection } = reality;
   if (!p || !q || !projection || projection.length !== 16 ||
       ![p.x, p.y, p.z, q.x, q.y, q.z, q.w, ...projection].every(Number.isFinite)) return false;
-  if (Math.hypot(q.x, q.y, q.z, q.w) < .5 || projection[0] <= 0 || projection[5] <= 0) return false;
+  const norm = Math.hypot(q.x, q.y, q.z, q.w);
+  if (norm < .5 || norm > 1.5 || projection[0] <= 0 || projection[5] <= 0) return false;
+  let candidate = candidateProjections.get(camera);
+  if (!candidate) { candidate = camera.projectionMatrix.clone(); candidateProjections.set(camera, candidate); }
+  candidate.fromArray(projection);
+  const determinant = candidate.determinant();
+  if (!Number.isFinite(determinant) || Math.abs(determinant) < 1e-12) return false;
   camera.position.set(p.x, p.y, p.z);
   camera.quaternion.set(q.x, q.y, q.z, q.w).normalize();
-  camera.projectionMatrix.fromArray(projection);
+  camera.projectionMatrix.copy(candidate);
   camera.projectionMatrixInverse.copy(camera.projectionMatrix).invert();
   camera.fov = 2 * Math.atan(1 / projection[5]) * 180 / Math.PI;
   camera.aspect = projection[5] / projection[0];
