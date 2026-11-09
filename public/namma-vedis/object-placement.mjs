@@ -1,4 +1,4 @@
-import { Vector3, Quaternion, Matrix4 } from 'three';
+import { Vector3, Quaternion, Matrix4, MathUtils } from 'three';
 
 // Face landmarks are image measurements, not metric scene geometry. Estimate
 // depth from adult face dimensions; preserve the camera's actual cover crop.
@@ -61,5 +61,5 @@ export function freePose(camera, x, y, distance, frame) {
   const position = camera.position.clone().addScaledVector(ray, distance);
   frame.worldToLocal(position);
   const rotation = frame.getWorldQuaternion(new Quaternion()).invert();
-  return { position, quaternion: rotation }; // Distance changes perspective, never physical model size.
+  return { position, quaternion: rotation, scale: MathUtils.clamp(distance / 1.5, .25, 2) };
 }

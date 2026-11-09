@@ -2,18 +2,6 @@
 
 Audit date: 9 November 2026. Baseline: `de8d518d29b1085f822203d2be2295fc8af309ae`. Live experience: https://abishekg.com/namma-vedis.
 
-## Surface contact and physical-scale correction
-
-Further phone feedback showed that the drift patch alone did not establish convincing surface placement. Source review identified three concrete causes: responsive (normalized) world scale mixed with meter-sized models, ground mode rejecting feature-point hits and falling back to y=0, and free previews using a palm-size formula that inflated a flower pot to roughly 2.8 times its native dimensions.
-
-The engine now requests absolute metric scale and world points. A local feature-point patch must contain at least six distinct, sufficiently confident points with a consistent height and two-dimensional spread. A ray/surface intersection must remain inside the observed patch; walls, isolated features and arbitrary estimated-plane hits are rejected. The live-camera path no longer fabricates an unobserved floor/table height. Short-lived query caching bounds repeat work while previews are stationary.
-
-Surface previews snap to that measured flat patch and use the native model dimensions (flower-pot body height 14.5 cm at 1×). Contact shadows, light pools, falling sparks and debris use the captured support height. Positions and dimensions are frozen at placement. Manual depth remains an explicit, clearly labeled option for creative free placement; Auto surface returns to measured placement. Head/palm miniatures remain intentionally scaled for their targets, and the sky uses its existing independent recovery path.
-
-Verification: 103 automated tests pass, including surface support/rejection, physical-size preview, projected-size change when approaching, fixed transforms when orbiting, and retained contact height. Production build and syntax checks pass. These CPU tests use real Three.js math/geometry with mocked rendering, not a real phone camera/GPU.
-
-Primary references: [8th Wall absolute scale](https://8thwall.org/docs/api/engine/xrcontroller/configure), [feature-point hit tests](https://8thwall.org/docs/api/engine/xrcontroller/hittest), [world-point output](https://8thwall.org/docs/api/engine/xrcontroller/pipelinemodule). The installed engine binary was also checked for the documented scale and hit-test options. Absolute scale needs enough camera motion for calibration, so initial placement may take longer than the removed shortcut. A low-texture/glossy tabletop may not yield a supported patch. This is an estimate of flat horizontal support, not a full scene mesh, real-object occlusion, or a guarantee of drift-free phone tracking. Those remain real-device release checks.
-
 ## Drift correction after device feedback
 
 A user reported a flower pot floating beside a desk. A still image does not identify its placement route, but reproduction exposed a concrete free-placement defect: the nearby-object root copied the sky recovery transform, so a sky relocalization moved an already placed cracker. The new regression fails against the preceding release.

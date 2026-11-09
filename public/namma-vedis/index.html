@@ -30,7 +30,7 @@
   <div id="ui" hidden>
     <div id="top">
       <button id="mode" type="button" title="Automatic sky/floor switching">Sky · AR</button><button id="motionBtn" class="pill" type="button" hidden>Enable motion</button>
-      <button id="surfaceBtn" type="button" hidden>Surface · Auto</button>
+      <button id="surfaceBtn" type="button" hidden>On the floor</button>
       <div class="spacer"></div>
       <button class="round" id="hideBtn" type="button" aria-label="Hide controls for recording">
         <svg viewBox="0 0 24 24"><path d="M3 3l18 18"/><path d="M10.6 5.2A10 10 0 0 1 12 5c6 0 9.500 7 9.500 7a16 16 0 0 1-3.200 4M6.300 6.800A16 16 0 0 0 2.500 12S6 19 12 19a9.500 9.500 0 0 0 4.100-.9"/><path d="M9.900 9.900a3 3 0 0 0 4.200 4.200"/></svg>
@@ -41,12 +41,12 @@
       </button>
     </div>
     <div id="headCue0" class="head-cue" hidden aria-hidden="true">Tap head ✦</div><div id="headCue1" class="head-cue" hidden aria-hidden="true">Tap head ✦</div>
-    <button id="freeBtn" class="pill" type="button" hidden>Place on surface</button>
-    <div id="placementControls" hidden role="group" aria-label="Surface placement">
-      <p id="placementHelp" role="status">Aim at a flat surface · then place</p>
-      <label for="placementDepth">Manual depth <input id="placementDepth" type="range" min="0.3" max="4" step="0.05" value="1.2"></label>
+    <button id="freeBtn" class="pill" type="button" hidden>Place anywhere</button>
+    <div id="placementControls" hidden role="group" aria-label="Free placement">
+      <p id="placementHelp" role="status">Tap a spot · adjust · place</p>
+      <label for="placementDepth">Distance <input id="placementDepth" type="range" min="0.3" max="4" step="0.05" value="1.2"></label>
       <label for="placementSize">Size <input id="placementSize" type="range" min="0.25" max="2" step="0.05" value="1"></label>
-      <div><button id="cancelPlacement" type="button">Cancel</button><button id="autoSurface" type="button">Auto surface</button><button id="placeBtn" type="button">Place cracker</button></div>
+      <div><button id="cancelPlacement" type="button">Cancel</button><button id="placeBtn" type="button">Place cracker</button></div>
     </div>
     <div id="extraTray"><button class="pill" id="royalBtn" type="button" aria-pressed="false">Grand shows ✦</button><button class="pill" id="wishBtn" type="button">Happy Diwali in the sky</button></div><div id="effectStatus" role="status" hidden></div><div id="trackingStatus" role="status" hidden>Move your phone slowly to find the floor.</div><div id="picker" role="toolbar" aria-label="Firecrackers"></div>
   </div>

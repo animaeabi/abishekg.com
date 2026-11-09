@@ -17,7 +17,7 @@ import { HandStabilizer } from './hand-stabilizer.mjs';
 import { createHandTracking } from './hand-tracking.mjs';
 import { HeadTargets, headPoses, freePose } from './object-placement.mjs';
 const headTargets = new HeadTargets(), headStabilizer = new HandStabilizer(), inferenceGate = {};
-let headTracker = null, objectAudio = null, objectPlacement = null, freeEditing = false, freePoint = { x: .5, y: .5 }, freeDistance = 1.2, freeSize = 1, freeManualDepth = false, previewSurface = null;
+let headTracker = null, objectAudio = null, objectPlacement = null, freeEditing = false, freePoint = { x: .5, y: .5 }, freeDistance = 1.2, freeSize = 1;
 const handAnchor = new HandAnchor();
 const handStabilizer = new HandStabilizer();
 let handTracker = null, handWasReady = false, handAudio = null, skyAudio = null;
@@ -25,7 +25,7 @@ let atomRun = 0, atomOnPalm = false, palmMotion = null;
 const atomSequence = new AtomSequence();
 let worldTracking = null, trackingStarting = false;
 const placementGuide = new PlacementGuide();
-
+let tableSurface = false;
 let cameraFeedRenderer = null, trackedCameraTexture = null, feedGeometry = null;
 THREE.ColorManagement.enabled = false; // everything here is hand-graded, so it goes to the screen as written
 
@@ -37,7 +37,7 @@ const clamp = (v, a, b) => (v < a ? a : v > b ? b : v);
 const vibrate = (p) => { try { navigator.vibrate && navigator.vibrate(p); } catch (e) { /* unsupported */ } };
 const reduceMotion = matchMedia('(prefers-reduced-motion: reduce)').matches;
 
-const FLOOR_H = 1.4; // Camera-free demo height only; live surfaces use measured geometry.
+const FLOOR_H = 1.4, TABLE_H = .45; // how far below the phone the surface is, in metres
 let floorY = -FLOOR_H;
 // Roughly what each metal salt burns like: strontium red, barium green, copper blue, sodium gold, charcoal amber.
 const C = {
@@ -169,7 +169,7 @@ for (let i = 0; i < 8; i++) {
 }
 let poolN = 0;
 function floorGlow(x, z, c, intensity, radius, groundY = floorY) {
-  if (poolN >= pools.length || (effectSpace === objectWorld && !objectPlacement?.surface)) return;
+  if (poolN >= pools.length || effectSpace === objectWorld) return;
   if (effectSpace === palmWorld && palmMotion && palmMotion.state !== 'held' && palmMotion.position.y > palmMotion.floorY + .01) return;
   const m = pools[poolN++];
   m.position.set(x, groundY + .004, z);
@@ -178,9 +178,6 @@ function floorGlow(x, z, c, intensity, radius, groundY = floorY) {
     if (palmMotion?.state === 'held') radius = Math.min(radius, handStabilizer.width * .44 / palmWorld.scale.x);
     m.position.applyMatrix4(palmWorld.matrixWorld); m.quaternion.copy(palmWorld.quaternion);
     m.scale.setScalar(radius * palmWorld.scale.x);
-  } else if (effectSpace === objectWorld) {
-    m.position.applyMatrix4(objectWorld.matrixWorld); m.quaternion.copy(objectWorld.quaternion);
-    m.scale.setScalar(radius * objectWorld.scale.x);
   } else m.scale.setScalar(radius);
   m.material.uniforms.uC.value.setRGB(c[0] * intensity, c[1] * intensity, c[2] * intensity);
   m.visible = true;
@@ -404,8 +401,8 @@ function particleToObjectFrame(store, i) {
   store.size[i] *= scale; store.grav[i] *= scale;
   if (store.grow) { store.grow[i] *= scale; store.wind[i] *= scale; }
   // Unknown surfaces must not produce a fictitious horizontal collision shelf.
-  store.groundY[i] = objectPlacement?.surface ? objectWorld.position.y : -1000;
-  if (store.flag && !objectPlacement?.surface) store.flag[i] &= ~F.BOUNCE;
+  store.groundY[i] = -1000;
+  if (store.flag) store.flag[i] &= ~F.BOUNCE;
 }
 function updateSmoke(dt) {
   let n = 0;
@@ -600,11 +597,10 @@ function floorPoint(ray) {
 function placementPoint(cx, cy) {
   if (worldTracking?.active) {
     if (!worldTracking.ready) return null;
-    const hit = worldTracking.hit(cx / W, cy / H, false, camera);
+    const hit = worldTracking.hit(cx / W, cy / H, tableSurface);
     if (hit && [hit.x, hit.y, hit.z].every(Number.isFinite) && hit.y < camera.position.y - .05) {
       return new THREE.Vector3(hit.x, hit.y, hit.z);
     }
-    return null; // A tracked camera alone is not evidence of a surface here.
   }
   return floorPoint(rayAt(cx, cy));
 }
@@ -861,7 +857,7 @@ function contactShadow(x, z, radius, opacity, groundY = floorY) {
   m.scale.setScalar(radius);
   m.frustumCulled = false; m.renderOrder = 1;
   m.userData.contactShadow = true;
-  if (effectSpace === objectWorld && !objectPlacement?.surface) m.visible = false;
+  if (effectSpace === objectWorld) m.visible = false;
   effectSpace.add(m);
   return m;
 }
@@ -902,7 +898,7 @@ function bomb(p, b) {
       floorGlow(p.x, p.z, [1, .55, .2], .12 + Math.random() * .1, .4, groundY);
       return true;
     }
-    const grounded = (effectSpace !== objectWorld || objectPlacement?.surface) && (!onPalm || palmMotion?.state === 'landed');
+    const grounded = effectSpace !== objectWorld && (!onPalm || palmMotion?.state === 'landed');
     if (effectSpace === objectWorld && objectPlacement) objectPlacement.detached = true;
     if (onPalm) palmMotion?.burst(); // Freeze this burst at its current room position.
     pan = panFor(p);
@@ -1229,8 +1225,10 @@ function setMode(m) {
   if (playing && !uiHidden && !toldMode[m]) { toldMode[m] = true; hint(m === 'sky' ? 'Tap anywhere to burst it there.' : 'Aim at the floor and tap to place a cracker.', 3600); }
 }
 surfaceBtn.addEventListener('click', () => {
+  tableSurface = !tableSurface;
+  floorY = worldTracking?.active ? (tableSurface ? camera.position.y - TABLE_H : 0) : -(tableSurface ? TABLE_H : FLOOR_H);
+  surfaceBtn.textContent = tableSurface ? 'On a table' : 'On the floor';
   placementGuide.select();
-  hint('Aim at a flat floor or tabletop with visible detail. The ring appears on a measured surface.', 4500);
 });
 
 let lastSkyTap = -Infinity;
@@ -1272,7 +1270,7 @@ function fireAt(cx, cy) {
   if (id === 'wala10000' && emitters.some((e) => e.largeWala)) { hint('Let this 10,000 wala finish first.', 2000); return false; }
   if (target) return placeObject('head', target);
   const spot = onPalm ? new THREE.Vector3(0, 0, 0) : placementPoint(cx, cy);
-  if (!spot) { hint("No surface found here. Tap Place on surface to position it yourself.", 2500); return false; }
+  if (!spot) { hint("No surface found here. Tap Place anywhere to position it yourself.", 2500); return false; }
   placementGuide.place();
   ring.visible = false; ring.material.opacity = 0;
   if (id === 'atom') {
@@ -1350,9 +1348,9 @@ function startAutoHeadTracking() {
       headTargets.update(poses, time);
     },
     onLost() { headTargets.clear(); },
-    onError() { detachHead(); hint('Head tracking is unavailable. Palm, floor, sky and Place on surface are still available.', 4000); },
+    onError() { detachHead(); hint('Head tracking is unavailable. Palm, floor, sky and Place anywhere are still available.', 4000); },
   });
-  headTracker.start().catch(() => { headTargets.clear(); hint('Head detection is unavailable here. Use Place on surface.', 3000); });
+  headTracker.start().catch(() => { headTargets.clear(); hint('Head detection is unavailable here. Use Place anywhere.', 3000); });
 }
 function updateObjectPlacement(now, dt) {
   if (objectPlacement?.type === 'head' && !objectPlacement.detached) {
@@ -1396,17 +1394,14 @@ function updateObjectPreview() {
     } else { objectPreview = createCrackerModel(kind, TEX); objectPreview.extinguish(); }
     objectGuide.add(objectPreview.group);
   }
-  previewSurface = !freeManualDepth ? placementPoint(freePoint.x * W, freePoint.y * H) : null;
-  const pose = previewSurface ? { position: objectFrame.worldToLocal(previewSurface.clone()), quaternion: new THREE.Quaternion() } :
-    freeManualDepth ? freePose(camera, freePoint.x, freePoint.y, freeDistance, objectFrame) : null;
+  const pose = freePose(camera, freePoint.x, freePoint.y, freeDistance, objectFrame);
   objectGuide.visible = Boolean(pose) && !uiHidden;
   if (pose) {
     objectGuide.position.copy(pose.position); objectGuide.quaternion.copy(pose.quaternion);
-    // Native model dimensions in meters, independent of camera distance.
-    objectGuide.scale.setScalar(freeSize); objectGuide.updateMatrixWorld(true);
+    objectGuide.scale.setScalar(objectScale(kind, 6 * freeSize)); objectGuide.updateMatrixWorld(true);
   }
-  $('placeBtn').disabled = !placementTrackingReady() || !pose || atomSequence.busy || objectBusy();
-  $('placementHelp').textContent = !placementTrackingReady() ? 'Move gently sideways to establish scale and tracking.' : previewSurface ? 'Surface found · physical size · ready to place' : freeManualDepth ? 'Manual depth · not attached to a detected surface' : 'Aim at a detailed, flat surface. Move gently sideways.';
+  $('placeBtn').disabled = !placementTrackingReady() || atomSequence.busy || objectBusy();
+  $('placementHelp').textContent = placementTrackingReady() ? 'Match the depth to your object · then place' : 'Finding your space. Aim at a detailed surface and move gently sideways.';
 }
 function exitFreePlacement() {
   freeEditing = false; $('placementControls').hidden = true; clearObjectPreview(); placementGuide.select(); updateModeLabel();
@@ -1425,12 +1420,11 @@ function placeObject(type, target = null) {
   } else {
     if (!freeEditing || !placementTrackingReady()) return false;
     updateObjectPreview(); pose = { position: objectGuide.position.clone(), quaternion: objectGuide.quaternion.clone() };
-    if (!objectGuide.visible) return false;
     scale = objectGuide.scale.x;
   }
   objectWorld.position.copy(pose.position); objectWorld.quaternion.copy(pose.quaternion); objectWorld.scale.setScalar(scale);
   objectWorld.updateMatrixWorld(true);
-  objectPlacement = { type, id: target?.id, lastSeen: target?.time ?? last, detached: type !== 'head', surface: type === 'free' && Boolean(previewSurface) };
+  objectPlacement = { type, id: target?.id, lastSeen: target?.time ?? last, detached: type !== 'head' };
   if (freeEditing) exitFreePlacement();
   placementGuide.place(); ring.visible = false; ring.material.opacity = 0;
   for (let i = 0; i < 2; i++) $('headCue' + i).hidden = true;
@@ -1451,14 +1445,13 @@ function placeObject(type, target = null) {
 }
 $('freeBtn').addEventListener('click', () => {
   if (atomSequence.busy || objectBusy()) { hint('Let this effect finish first.', 2000); return; }
-  freeEditing = true; freePoint = { x: .5, y: .55 }; freeDistance = 1.2; freeSize = 1; freeManualDepth = false; previewSurface = null;
+  freeEditing = true; freePoint = { x: .5, y: .44 }; freeDistance = 1.2; freeSize = 1;
   $('placementDepth').value = String(freeDistance); $('placementSize').value = String(freeSize);
   $('placementControls').hidden = false; setMode('ground'); updateModeLabel(); updateObjectPreview();
 });
 $('cancelPlacement').addEventListener('click', exitFreePlacement);
-$('autoSurface').addEventListener('click', () => { freeManualDepth = false; updateObjectPreview(); });
 $('placeBtn').addEventListener('click', () => placeObject('free'));
-$('placementDepth').addEventListener('input', e => { freeManualDepth = true; freeDistance = clamp(Number(e.target.value) || 1.2, .3, 4); updateObjectPreview(); });
+$('placementDepth').addEventListener('input', e => { freeDistance = clamp(Number(e.target.value) || 1.2, .3, 4); updateObjectPreview(); });
 $('placementSize').addEventListener('input', e => { freeSize = clamp(Number(e.target.value) || 1, .25, 2); updateObjectPreview(); });
 
 /* ---------- Motion and look ---------- */
@@ -1539,7 +1532,7 @@ function attachTrackedFeed(feedVideo) {
 function trackingState(ready) {
   skyMotionReady = !ready && Boolean(skyTracking.canBridge(motionState()));
   $('trackingStatus').hidden = ready || !worldTracking?.active;
-  $('trackingStatus').textContent = ready ? '' : 'Aim at a detailed floor or tabletop and move gently sideways.';
+  $('trackingStatus').textContent = ready ? '' : 'Aim at a detailed patch of floor and move gently sideways.';
   if (!ready) { clearInput(); ring.visible = false; ring.material.opacity = 0; }
   syncAudioPlayback();
   updateModeLabel();
@@ -1749,7 +1742,7 @@ async function requestMotionAccess() {
 function updateModeLabel() {
   $('freeBtn').hidden = mode !== 'ground' || freeEditing;
   if (freeEditing) {
-    modeEl.textContent = 'Place on surface'; surfaceBtn.hidden = true; $('trackingStatus').hidden = true;
+    modeEl.textContent = 'Place anywhere'; surfaceBtn.hidden = true; $('trackingStatus').hidden = true;
     $('motionBtn').hidden = true; return;
   }
   if (playing && handAnchor.ready) {
@@ -1760,7 +1753,7 @@ function updateModeLabel() {
   if (worldTracking?.active) {
     const sky = mode === 'sky', ready = sky ? skyAvailable() : worldTracking.ready;
     $('trackingStatus').hidden = ready;
-    $('trackingStatus').textContent = sky ? (gyro ? 'Move your phone gently to reconnect sky motion.' : 'Enable motion to use the sky while floor tracking starts.') : 'Aim at a detailed floor or tabletop and move gently sideways.';
+    $('trackingStatus').textContent = sky ? (gyro ? 'Move your phone gently to reconnect sky motion.' : 'Enable motion to use the sky while floor tracking starts.') : 'Aim at a detailed patch of floor and move gently sideways.';
     modeEl.textContent = (sky ? 'Sky' : 'Floor') + (worldTracking.ready ? ' · AR' : sky ? (ready ? ' · Motion' : ' · Waiting') : ' · Scanning');
     $('motionBtn').hidden = !sky || ready || gyro; return;
   }
