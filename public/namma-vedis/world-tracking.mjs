@@ -1,3 +1,5 @@
+import { Vector3 } from 'three';
+import { measuredSurface } from './surface-placement.mjs';
 // 8th Wall's distributed SLAM runtime supports positional WebAR on iOS Safari
 // as well as Android. No gyro-only fallback is advertised as world tracking.
 export function waitForWorldEngine(win = window, timeout = 30000) {
@@ -16,9 +18,10 @@ export function waitForWorldEngine(win = window, timeout = 30000) {
 
 export function createWorldTracking({ XR8, canvas, webgl2, onContext = () => {}, onGeometry = () => {}, onVideo, onPose, onFrame, onState, onError }) {
   let active = false, ready = false, started = false, resolveStart, rejectStart, startupTimer;
+  let worldPoints = [], cachedSurface = null;
   const setReady = (value) => {
     if (value === ready) return;
-    ready = value; onState(value);
+    ready = value; cachedSurface = null; if (!value) worldPoints = []; onState(value);
   };
   const projection = (initial = false) => XR8.XrController.updateCameraProjectionMatrix({
     cam: { pixelRectWidth: canvas.width, pixelRectHeight: canvas.height, nearClipPlane: .05, farClipPlane: 900 },
@@ -44,6 +47,7 @@ export function createWorldTracking({ XR8, canvas, webgl2, onContext = () => {},
       const reality = processCpuResult?.reality;
       const valid = reality && onPose(reality);
       setReady(Boolean(valid && reality.trackingStatus === 'NORMAL'));
+      worldPoints = ready ? (reality.worldPoints || []) : [];
     },
     onRender() { if (active) onFrame(); },
     onCameraStatusChange({ status }) {
@@ -61,10 +65,10 @@ export function createWorldTracking({ XR8, canvas, webgl2, onContext = () => {},
         resolveStart = resolve; rejectStart = reject;
         startupTimer = setTimeout(() => fail(new Error('Camera startup timed out. Allow camera and motion access, then retry.')), 45000);
         try {
-          // Approximate size from the initial 1.4-unit camera height instead of
-          // waiting for metric scale estimation. Positional SLAM and the NORMAL
-          // tracking gate still control every placement and recovery.
-          XR8.XrController.configure({ disableWorldTracking: false, scale: 'responsive' });
+          // Models, camera translation and hand estimates must all use meters.
+          // Responsive scale normalizes an assumed starting height and cannot
+          // preserve physical dimensions across different starting positions.
+          XR8.XrController.configure({ disableWorldTracking: false, scale: 'absolute', enableWorldPoints: true });
           XR8.addCameraPipelineModules([XR8.XrController.pipelineModule(), pipeline]);
           // The existing Three renderer shares this canvas/context. It resets
           // its GL state before each render; XR8 owns frame timing and camera.
@@ -74,12 +78,16 @@ export function createWorldTracking({ XR8, canvas, webgl2, onContext = () => {},
         } catch (error) { fail(error); }
       });
     },
-    hit(x, y, table = false) {
-      if (!ready) return null;
-      const hits = XR8.XrController.hitTest(x, y) || [];
-      const hit = hits.find(h => h.position && Number.isFinite(h.distance) && h.distance > .15 && h.distance < 8 &&
-        (h.type === 'DETECTED_SURFACE' || h.type === 'ESTIMATED_SURFACE' || (table && h.type === 'FEATURE_POINT')));
-      return hit?.position ? { ...hit.position } : null;
+    hit(x, y, _table = false, camera) {
+      if (!ready || !camera || ![x, y].every(Number.isFinite) || x < 0 || x > 1 || y < 0 || y > 1) return null;
+      const ray = new Vector3(x * 2 - 1, 1 - y * 2, .5).unproject(camera).sub(camera.position).normalize();
+      const now = performance.now();
+      if (cachedSurface && now - cachedSurface.time < 100 && Math.abs(x - cachedSurface.x) < .002 && Math.abs(y - cachedSurface.y) < .002 &&
+        camera.position.distanceTo(cachedSurface.origin) < .01 && ray.angleTo(cachedSurface.ray) < .008) return cachedSurface.point ? { ...cachedSurface.point } : null;
+      const hits = XR8.XrController.hitTest(x, y, ['FEATURE_POINT', 'DETECTED_SURFACE']) || [];
+      const point = measuredSurface(hits, worldPoints, camera.position, ray);
+      cachedSurface = { x, y, time: now, origin: camera.position.clone(), ray, point };
+      return point ? { ...point } : null;
     },
     resize() { if (active && started) projection(); },
     pause() { if (active) { setReady(false); XR8.pause(); } },

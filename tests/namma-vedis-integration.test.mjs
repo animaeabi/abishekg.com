@@ -57,7 +57,7 @@ test('actual app: placement, new ground effects, release regressions and mixed-e
     useSkyAudio(context) { skyAudio = context ? { actx: context, master: context.createGain() } : null; }, get lettering() { return activeLettering; }, get queuedWish() { return pendingSkyWish; }, cancelPalmEffect, syncAudioPlayback, sparkMat, smokeMat, outHand, sHand, handState,
     fireAt, setMode, updateCamera, updateRing, step, queueSkyWish, writeSky, scatterPaper, updateSmoke, sSize, smokeGeo, trackingState,
     flowerPot, sanguchakram, wala, WALAS, royalShow, finale, rocket, twelveShot, peony, chrysanthemum, goldenRain, crackling, diamondBurst, launch, tone, noise,
-    init() { playing = true; floorY = 0; worldTracking = { active: true, ready: true, hit: () => null, resize() {} }; },
+    init() { playing = true; floorY = 0; worldTracking = { active: true, ready: true, hit: (x, y) => groundIntersection(THREE, camera.position, rayAt(x * W, y * H), floorY), resize() {} }; },
     setFloor(y) { floorY = y; },
     setTracker(tracker) { worldTracking = tracker; },
     useAudio(context) { actx = context; master = context?.createGain(); verbIn = context?.createGain(); noiseBuf = {}; },
@@ -586,7 +586,7 @@ test('actual app: placement, new ground effects, release regressions and mixed-e
 
   await t.test('nearby objects stay in room coordinates when the sky reference frame recovers', () => {
     qa.init(); qa.headTargets.clear(); qa.handAnchor.invalidate(); qa.setMode('ground'); qa.selected.ground = 'flower';
-    qa.camera.position.set(0, 1.4, 0); qa.camera.rotation.set(0, 0, 0); qa.camera.updateMatrixWorld();
+    qa.camera.position.set(0, 1.4, 0); qa.camera.rotation.set(-.65, 0, 0); qa.camera.updateMatrixWorld();
     qa.skyWorld.position.set(0, 0, 0); qa.skyWorld.quaternion.identity(); qa.skyWorld.updateMatrixWorld(); qa.simulate(.05);
     elements.get('freeBtn').handlers.click(); elements.get('placeBtn').handlers.click(); qa.simulate(1);
     const position = qa.objectWorld.getWorldPosition(new RealThree.Vector3());
@@ -611,6 +611,44 @@ test('actual app: placement, new ground effects, release regressions and mixed-e
     assert.equal(elements.get('placeBtn').disabled, true);
     assert.equal(qa.placeObject('free'), false); assert.equal(qa.objectPlacement, null);
     elements.get('cancelPlacement').handlers.click(); qa.init(); qa.sensor(false);
+  });
+
+  await t.test('no measured surface cannot silently become an assumed floor or a floating preview', () => {
+    qa.init(); qa.camera.position.set(0, 1.4, 0); qa.camera.rotation.set(-.7, 0, 0); qa.camera.updateMatrixWorld(); qa.setMode('ground');
+    qa.setTracker({ active: true, ready: true, hit: () => null, resize() {} }); qa.placementGuide.select();
+    qa.selected.ground = 'flower'; const count = qa.emitters.length;
+    qa.updateRing(1); assert.equal(qa.ring.visible, false);
+    assert.equal(qa.fireAt(195, 422), false); assert.equal(qa.emitters.length, count);
+    elements.get('freeBtn').handlers.click();
+    assert.equal(qa.objectGuide.visible, false); assert.equal(elements.get('placeBtn').disabled, true);
+    assert.equal(qa.placeObject('free'), false);
+    elements.get('placementDepth').handlers.input({ target: { value: '1' } });
+    assert.equal(qa.objectGuide.visible, true, 'explicit manual depth remains available');
+    assert.match(elements.get('placementHelp').textContent, /Manual depth/);
+    elements.get('autoSurface').handlers.click(); assert.equal(qa.objectGuide.visible, false, 'switching back to measured placement removes the floating preview');
+    elements.get('cancelPlacement').handlers.click();
+  });
+
+  await t.test('surface-snapped flower pot keeps metric dimensions, contact and perspective while approaching and orbiting', () => {
+    qa.init(); qa.camera.position.set(0, 1.4, 0); qa.camera.lookAt(0, .75, -1.2); qa.camera.updateMatrixWorld(); qa.setMode('ground');
+    const support = { x: 0, y: .75, z: -1.2, surface: true };
+    qa.setTracker({ active: true, ready: true, hit: () => ({ ...support }), resize() {} }); qa.selected.ground = 'flower';
+    elements.get('freeBtn').handlers.click();
+    assert.equal(qa.objectGuide.scale.x, 1, 'free placement must not reuse oversized palm scaling');
+    assert.ok(Math.abs(qa.objectGuide.position.y - .75) < 1e-8);
+    elements.get('placeBtn').handlers.click(); qa.simulate(.02);
+    assert.equal(qa.objectPlacement.surface, true);
+    assert.ok(qa.objectWorld.children.some(c => c.userData.contactShadow && c.visible));
+    const base = qa.objectWorld.getWorldPosition(new RealThree.Vector3()), tip = base.clone().add(new RealThree.Vector3(0, .145, 0));
+    const size = () => tip.clone().project(qa.camera).distanceTo(base.clone().project(qa.camera));
+    const farSize = size(), original = qa.objectWorld.matrixWorld.clone();
+    qa.camera.position.lerp(base, .5); qa.camera.updateMatrixWorld(); const nearSize = size();
+    assert.ok(nearSize / farSize > 1.8 && nearSize / farSize < 2.3, 'half distance should produce approximately twice the projected height');
+    qa.camera.position.set(1.2, 1.4, -1.2); qa.camera.lookAt(base); qa.camera.updateMatrixWorld(); qa.simulate(1.5);
+    assert.deepEqual(qa.objectWorld.matrixWorld.elements, original.elements, 'orbiting cannot rotate, move or resize the model');
+    const paperOrSmoke = [...qa.S.life].findIndex((life, i) => life > 0 && qa.S.sky[i] === 2);
+    assert.ok(paperOrSmoke >= 0); assert.equal(qa.S.groundY[paperOrSmoke], .75, 'effects retain the captured contact height');
+    qa.simulate(20); assert.equal(qa.objectWorld.children.length, 0);
   });
 
 });

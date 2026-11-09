@@ -56,7 +56,7 @@ test('SLAM owns pose/render timing; limited tracking blocks placement until reco
   const XR8 = {
     XrController: { configure: c => config = c, pipelineModule: () => ({ name: 'reality' }),
       updateCameraProjectionMatrix: c => projections.push(c),
-      hitTest: () => [{ type: 'DETECTED_SURFACE', distance: 2, position: { x: 1, y: .7, z: -2 } }] },
+      hitTest: (_x, _y, types) => { assert.ok(types.includes('FEATURE_POINT')); return [{ type: 'FEATURE_POINT', distance: 2, position: { x: 1, y: .7, z: -2 } }]; } },
     XrConfig: { device: () => ({ MOBILE: 'mobile' }), camera: () => ({ BACK: 'back' }) },
     addCameraPipelineModules: m => modules = m, run: c => run = c,
     pause() {}, resume() {}, stop() { stopped = true; }, clearCameraPipelineModules() { clears++; },
@@ -66,19 +66,22 @@ test('SLAM owns pose/render timing; limited tracking blocks placement until reco
     onState: v => states.push(v), onFrame: () => frames++, onError: e => { throw e; } });
   const start = tracker.start(), app = modules[1];
   app.onStart(); app.onAttach({ video: 'same-camera-video' }); await start;
-  assert.equal(config.disableWorldTracking, false); assert.equal(config.scale, 'responsive');
+  assert.equal(config.disableWorldTracking, false); assert.equal(config.scale, 'absolute'); assert.equal(config.enableWorldPoints, true);
   assert.equal(run.cameraConfig.direction, 'back'); assert.equal(run.allowedDevices, 'mobile');
   assert.equal(tracker.hit(.5, .5), null);
   app.onUpdate({ processCpuResult: { reality: { position: {}, trackingStatus: 'LIMITED', trackingReason: 'INITIALIZING' } } });
-  assert.equal(tracker.ready, false, 'faster sizing must not bypass positional tracking initialization');
+  assert.equal(tracker.ready, false, 'metric sizing must not bypass positional tracking initialization');
   app.onUpdate({ processCpuResult: { reality: { position: {}, trackingStatus: 'NORMAL' } } });
   assert.equal(tracker.ready, true, 'first valid tracked frame enables placement without another scan timer');
-  const anchor = tracker.hit(.5, .5); assert.deepEqual(anchor, { x: 1, y: .7, z: -2 });
+  const camera = new THREE.PerspectiveCamera(70, .5); camera.position.set(1, 1.4, 0); camera.lookAt(1, .7, -2); camera.updateMatrixWorld();
+  const points = []; for (let x = -.08; x <= .08; x += .04) for (let z = -.08; z <= .08; z += .04) points.push({ confidence: 1, position: { x: 1 + x, y: .7, z: -2 + z } });
+  app.onUpdate({ processCpuResult: { reality: { position: {}, trackingStatus: 'NORMAL', worldPoints: points } } });
+  const anchor = tracker.hit(.5, .5, false, camera); assert.ok(anchor?.surface); assert.ok(Math.abs(anchor.x - 1) < 1e-8 && Math.abs(anchor.y - .7) < 1e-8 && Math.abs(anchor.z + 2) < 1e-8);
   app.onRender(); assert.equal(frames, 1);
   app.onUpdate({ processCpuResult: { reality: { position: {}, trackingStatus: 'LIMITED' } } });
   assert.equal(tracker.hit(.5, .5), null);
   app.onUpdate({ processCpuResult: { reality: { position: {}, trackingStatus: 'NORMAL' } } });
-  assert.deepEqual(anchor, { x: 1, y: .7, z: -2 });
+  assert.ok(Math.abs(anchor.y - .7) < 1e-8, 'existing captured surface survives later tracking state changes');
   tracker.resize(); assert.equal(projections.length, 2);
   assert.equal('origin' in projections[1], false, 'resize must not recenter existing objects');
   tracker.stop(); assert.equal(stopped, true); assert.equal(clears, 1); assert.equal(tracker.active, false);
