@@ -66,12 +66,13 @@ const scene = new THREE.Scene();
 const world = new THREE.Group(); scene.add(world);
 const skyWorld = new THREE.Group(); scene.add(skyWorld);
 const skyTracking = new SkyTracking();
-// Same stable coordinate frame as the sky bridge, independently visible while
-// a head supplies its own image pose before world tracking has acquired a floor.
+// Nearby objects use fixed room coordinates. The sky bridge is deliberately
+// rebased on recovery and must never move a desk/floor/free-placement anchor.
 const objectFrame = new THREE.Group(); scene.add(objectFrame);
 const objectWorld = new THREE.Group(); objectFrame.add(objectWorld);
 const objectGuide = new THREE.Group(); objectFrame.add(objectGuide);
-const objectAvailable = () => skyAvailable() || Boolean(objectPlacement?.type === 'head' && headTargets.get(objectPlacement.id, last));
+const placementTrackingReady = () => !worldTracking?.active || worldTracking.ready;
+const objectAvailable = () => placementTrackingReady() || Boolean(objectPlacement?.type === 'head' && headTargets.get(objectPlacement.id, last));
 const palmWorld = new THREE.Group(); scene.add(palmWorld); palmWorld.visible = false;
 const handGuide = new THREE.Group(); scene.add(handGuide); handGuide.visible = false;
 let effectSpace = world;
@@ -213,7 +214,7 @@ const sparkMat = new THREE.ShaderMaterial({
     uniform float uScale; uniform float uMin; uniform vec2 uRes;
     varying vec4 vC; varying vec2 vP; varying float vH; varying float vR; varying float vG;
     void main() {
-      mat4 space = iSky > .5 ? uSky : (iHand > .5 ? uPalm : mat4(1.0));
+      mat4 space = iSky > 1.5 ? mat4(1.0) : (iSky > .5 ? uSky : (iHand > .5 ? uPalm : mat4(1.0)));
       vec4 a = viewMatrix * space * vec4(iPos, 1.0);
       if (a.z > -0.04) { gl_Position = vec4(2.0, 2.0, 2.0, 1.0); return; }
       vec4 b = viewMatrix * space * vec4(iPos - iVel * iSize.y, 1.0);
@@ -343,7 +344,7 @@ const smokeMat = new THREE.ShaderMaterial({
       vUv = position.xy * 0.5 + 0.5; vC = iCol; vHard = iSize.z;
       float c = cos(iSize.y), s = sin(iSize.y);
       vec2 offset = vec2(position.x * c - position.y * s, position.x * s + position.y * c) * iSize.x;
-      mat4 space = iSky > .5 ? uSky : (iHand > .5 ? uPalm : mat4(1.0));
+      mat4 space = iSky > 1.5 ? mat4(1.0) : (iSky > .5 ? uSky : (iHand > .5 ? uPalm : mat4(1.0)));
       vec4 mv = viewMatrix * space * vec4(iPos, 1.0);
       // Landed paper lies on the original floor, rather than turning to face
       // the camera like airborne smoke. This keeps its shape fixed in AR.
@@ -387,8 +388,8 @@ function particleToRoom(store, i) {
   if (store.grow) { store.grow[i] *= scale; store.wind[i] *= scale; }
   store.groundY[i] = palmMotion?.floorY ?? floorY; store.hand[i] = 0;
 }
-// Detach emitted sparks/smoke from the moving crown immediately, keeping the
-// settled camera frame. A nod moves the nozzle, never the old spark trail.
+// Detach emitted sparks/smoke from the moving crown immediately into fixed
+// room coordinates. A nod moves the nozzle, never the old spark trail.
 function particleToObjectFrame(store, i) {
   objectWorld.updateMatrix();
   particlePoint.set(store.x[i], store.y[i], store.z[i]).applyMatrix4(objectWorld.matrix);
@@ -1239,7 +1240,7 @@ function fireAt(cx, cy) {
   const onPalm = !target && playing && handAnchor.ready;
   if (onPalm) setMode('ground');
   if (!target && worldTracking?.active && (mode === 'sky' ? !skyAvailable() : !worldTracking.ready)) {
-    if (mode === 'ground') { hint('Still finding a surface. Use Place anywhere to choose your own spot.', 3500); $('freeBtn').hidden = false; }
+    if (mode === 'ground') { hint('Tracking is settling. Aim at a detailed surface and move gently sideways.', 3500); $('freeBtn').hidden = false; }
     return false;
   }
   if (onPalm && emitters.some(e => e.ground && e.space === palmWorld)) { hint('Let this palm cracker finish first.', 2000); return false; }
@@ -1333,8 +1334,8 @@ function startAutoHeadTracking() {
   headTracker = createHandTracking({ video, inferenceGate, intervals: [110, 240],
     workerURL: new URL('./head-worker.js', import.meta.url),
     captureContext: () => ({ projectionMatrix: camera.projectionMatrix.clone(), matrix: camera.matrixWorld.clone(),
-      quaternion: camera.quaternion.clone(), frameInverse: skyWorld.matrixWorld.clone().invert(),
-      frameQuaternion: skyWorld.getWorldQuaternion(new THREE.Quaternion()).invert(), width: W, height: H }),
+      quaternion: camera.quaternion.clone(), frameInverse: objectFrame.matrixWorld.clone().invert(),
+      frameQuaternion: objectFrame.getWorldQuaternion(new THREE.Quaternion()).invert(), width: W, height: H }),
     onResult(result, time, frame) {
       if (!frame) return;
       const poses = headPoses(result, frame, frame.width, frame.height, video.videoWidth, video.videoHeight);
@@ -1399,8 +1400,8 @@ function updateObjectPreview() {
     objectGuide.position.copy(pose.position); objectGuide.quaternion.copy(pose.quaternion);
     objectGuide.scale.setScalar(objectScale(kind, 6 * freeSize)); objectGuide.updateMatrixWorld(true);
   }
-  $('placeBtn').disabled = !skyAvailable() || atomSequence.busy || objectBusy();
-  $('placementHelp').textContent = skyAvailable() ? (worldTracking?.active && !worldTracking.ready ? 'Approximate placement · move gently' : 'Tap a spot · adjust · place') : 'Enable motion or move gently to establish tracking.';
+  $('placeBtn').disabled = !placementTrackingReady() || atomSequence.busy || objectBusy();
+  $('placementHelp').textContent = placementTrackingReady() ? 'Match the depth to your object · then place' : 'Finding your space. Aim at a detailed surface and move gently sideways.';
 }
 function exitFreePlacement() {
   freeEditing = false; $('placementControls').hidden = true; clearObjectPreview(); placementGuide.select(); updateModeLabel();
@@ -1417,7 +1418,7 @@ function placeObject(type, target = null) {
     headStabilizer.time = -Infinity;
     headStabilizer.update(pose.position, pose.quaternion, .15, target.time, String(target.id));
   } else {
-    if (!freeEditing || !skyAvailable()) return false;
+    if (!freeEditing || !placementTrackingReady()) return false;
     updateObjectPreview(); pose = { position: objectGuide.position.clone(), quaternion: objectGuide.quaternion.clone() };
     scale = objectGuide.scale.x;
   }
@@ -1439,7 +1440,7 @@ function placeObject(type, target = null) {
     else wala(origin, WALAS[kind]);
   });
   objectWorld.visible = true;
-  hint(type === 'head' ? 'A little celebration on your head. Move gently!' : worldTracking?.active && !worldTracking.ready ? 'Placed. Keep your phone near this spot while tracking settles.' : 'Placed. Move around to see it in your space.', 3500);
+  hint(type === 'head' ? 'A little celebration on your head. Move gently!' : 'Placed. Move around to see it in your space.', 3500);
   return true;
 }
 $('freeBtn').addEventListener('click', () => {
@@ -1742,7 +1743,7 @@ function updateModeLabel() {
   $('freeBtn').hidden = mode !== 'ground' || freeEditing;
   if (freeEditing) {
     modeEl.textContent = 'Place anywhere'; surfaceBtn.hidden = true; $('trackingStatus').hidden = true;
-    $('motionBtn').hidden = skyAvailable() || gyro; $('motionBtn').textContent = 'Enable motion'; return;
+    $('motionBtn').hidden = true; return;
   }
   if (playing && handAnchor.ready) {
     modeEl.textContent = 'Palm · Auto'; surfaceBtn.hidden = true; $('motionBtn').hidden = true;
@@ -2086,9 +2087,10 @@ function step(now) {
   if (!playing) { look.yaw = Math.sin(time * .1) * .04; look.pitch = .14; attract(dt); }
   updateCamera(dt);
   skyWorld.visible = skyAvailable();
-  objectFrame.position.copy(skyWorld.position); objectFrame.quaternion.copy(skyWorld.quaternion); objectFrame.updateMatrixWorld(true);
+  // Keep the nearby-object frame fixed even when skyWorld is reconciled.
+  objectFrame.updateMatrixWorld(true);
   updateObjectPlacement(now, dt);
-  objectFrame.visible = playing && (objectAvailable() || headTargets.targets.some(p => now - p.time < 350));
+  objectFrame.visible = playing && objectAvailable();
   syncObjectAudio();
   poolN = 0;
   if (playing) {

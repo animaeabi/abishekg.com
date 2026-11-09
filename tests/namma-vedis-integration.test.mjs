@@ -584,4 +584,33 @@ test('actual app: placement, new ground effects, release regressions and mixed-e
     assert.equal(qa.emitters.length, 0);
   });
 
+  await t.test('nearby objects stay in room coordinates when the sky reference frame recovers', () => {
+    qa.init(); qa.headTargets.clear(); qa.handAnchor.invalidate(); qa.setMode('ground'); qa.selected.ground = 'flower';
+    qa.camera.position.set(0, 1.4, 0); qa.camera.rotation.set(0, 0, 0); qa.camera.updateMatrixWorld();
+    qa.skyWorld.position.set(0, 0, 0); qa.skyWorld.quaternion.identity(); qa.skyWorld.updateMatrixWorld(); qa.simulate(.05);
+    elements.get('freeBtn').handlers.click(); elements.get('placeBtn').handlers.click(); qa.simulate(1);
+    const position = qa.objectWorld.getWorldPosition(new RealThree.Vector3());
+    const rotation = qa.objectWorld.getWorldQuaternion(new RealThree.Quaternion());
+    const projected = position.clone().project(qa.camera);
+    // Simulate the exact root correction made when sky motion rejoins SLAM.
+    qa.skyWorld.position.set(1.2, -.3, .7); qa.skyWorld.rotation.y = .6; qa.skyWorld.updateMatrixWorld(); qa.simulate(.05);
+    assert.ok(qa.objectWorld.getWorldPosition(new RealThree.Vector3()).distanceTo(position) < 1e-8, 'sky recovery moved the placed flower pot');
+    assert.ok(qa.objectWorld.getWorldQuaternion(new RealThree.Quaternion()).angleTo(rotation) < 1e-8);
+    assert.ok(qa.objectWorld.getWorldPosition(new RealThree.Vector3()).project(qa.camera).distanceTo(projected) < 1e-8);
+    const tracker = { active: true, ready: false, hit: () => null, resize() {} }; qa.setTracker(tracker);
+    qa.skyTracking.frameReady = true; qa.sensor(true); qa.simulate(.2);
+    assert.equal(qa.objectFrame.visible, false, 'nearby objects must hide while positional tracking is lost, even if sky motion works');
+    tracker.ready = true; qa.simulate(20); assert.equal(qa.objectWorld.children.length, 0);
+    qa.skyWorld.position.set(0, 0, 0); qa.skyWorld.quaternion.identity(); qa.skyWorld.updateMatrixWorld();
+  });
+
+  await t.test('motion-only sky cannot authorize a new nearby placement', () => {
+    qa.init(); qa.setMode('ground'); qa.selected.ground = 'flower';
+    qa.setTracker({ active: true, ready: false, hit: () => null, resize() {} }); qa.skyTracking.frameReady = true; qa.sensor(true);
+    elements.get('freeBtn').handlers.click(); qa.simulate(.05);
+    assert.equal(elements.get('placeBtn').disabled, true);
+    assert.equal(qa.placeObject('free'), false); assert.equal(qa.objectPlacement, null);
+    elements.get('cancelPlacement').handlers.click(); qa.init(); qa.sensor(false);
+  });
+
 });

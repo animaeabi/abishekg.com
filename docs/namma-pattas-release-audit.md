@@ -2,6 +2,14 @@
 
 Audit date: 9 November 2026. Baseline: `de8d518d29b1085f822203d2be2295fc8af309ae`. Live experience: https://abishekg.com/namma-vedis.
 
+## Drift correction after device feedback
+
+A user reported a flower pot floating beside a desk. A still image does not identify its placement route, but reproduction exposed a concrete free-placement defect: the nearby-object root copied the sky recovery transform, so a sky relocalization moved an already placed cracker. The new regression fails against the preceding release.
+
+Nearby models, sparks and smoke now stay in fixed room coordinates and do not inherit sky rebasing. Free placement requires positional world tracking; orientation-only sky readiness cannot authorize it. During positional tracking loss, free objects hide and pause rather than appearing to slide with the phone, then return at their original coordinates. Head tracking can still use fresh face measurements independently. Existing floor/palm/sky paths and Atom aftertone gating remain intact.
+
+The automated suite now contains 97 passing tests, including recovery and motion-only rejection regressions, and the production build passes. This corrects an application-level source of drift; it is not proof of zero SLAM drift on physical phones. Free-placement depth is still manually estimated and must match the real object's distance for convincing parallax. The historical follow-up below describes the prior implementation; its motion-only free-placement allowance is superseded by this correction.
+
 ## Follow-up: automatic head and free placement
 
 Implemented 9 November 2026, following the audit. Existing floor, sky and palm routes remain, with new explicit target routing:
