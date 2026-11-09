@@ -97,3 +97,16 @@ button:focus-visible { outline: 2px solid var(--text); outline-offset: 2px; }
 .title-word.changing { opacity: 0; transform: translateY(-7px); }
 @media (prefers-reduced-motion: reduce) { .title-word { transition: none; transform: none !important; } .title-word.changing { opacity: 1; } }
 @media (max-height:480px) { #start h1 { font-size: clamp(28px, 7vw, 36px); } }
+
+/* Placement editing uses explicit controls; the recording gesture stays intact. */
+#freeBtn { position: absolute; left: 12px; bottom: calc(env(safe-area-inset-bottom, 0px) + 108px); }
+.head-cue { position: absolute; transform: translate(-50%, -100%); padding: 5px 9px; border: 1px solid #ffae2b80; border-radius: 999px; color: var(--marigold); background: var(--tray); font-size: 11px; pointer-events: none; }
+#placementControls { position: absolute; left: 12px; right: 12px; bottom: calc(env(safe-area-inset-bottom, 0px) + 108px); max-width: 380px; margin: auto; padding: 12px; border-radius: 16px; background: rgba(13, 10, 22, .93); border: 1px solid #ffae2b40; }
+#placementControls p { margin: 0 0 6px; font-size: 12px; text-align: center; }
+#placementControls label { display: flex; align-items: center; gap: 12px; font-size: 12px; min-height: 36px; }
+#placementControls input { flex: 1; min-width: 0; accent-color: var(--marigold); touch-action: auto; }
+#placementControls > div { display: flex; gap: 8px; margin-top: 6px; }
+#placementControls button { flex: 1; min-height: 40px; border: 0; border-radius: 10px; background: #302639; cursor: pointer; }
+#placementControls #placeBtn { background: var(--marigold); color: #1a1205; font-weight: 600; }
+#placementControls #placeBtn:disabled { opacity: .5; }
+@media (max-height:480px) { #placementControls { left: auto; width: 260px; bottom: 106px; } #placementControls label { min-height: 28px; } }

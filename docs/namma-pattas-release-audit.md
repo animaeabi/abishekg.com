@@ -2,6 +2,21 @@
 
 Audit date: 9 November 2026. Baseline: `de8d518d29b1085f822203d2be2295fc8af309ae`. Live experience: https://abishekg.com/namma-vedis.
 
+## Follow-up: automatic head and free placement
+
+Implemented 9 November 2026, following the audit. Existing floor, sky and palm routes remain, with new explicit target routing:
+
+- Head landmarks load automatically in a second background worker using the same rear-camera stream. Head and hand inference share one fair scheduling slot. Model failure is isolated; neither worker replaces the AR camera.
+- Three consistent observations enable a head cue. Tapping that head creates a miniature version of the selected floor cracker. A person elsewhere in the image does not change the selected mode or divert an unrelated floor/sky tap.
+- The selected head uses a session continuity ID, stabilized position and orientation. Brief loss holds the last transform; prolonged loss detaches at the last location. Ambiguous crossings get new IDs rather than transferring a running effect. This is spatial association, not biometric recognition.
+- An already emitted spark or smoke particle lives in the stable scene frame, independent of the moving head. Bombs use the longer attachment fuse, and the Atom aftertone still gates every placement path.
+- Place anywhere opens a preview with distance and size sliders and explicit Place/Cancel actions. It uses an estimated depth, remains fixed after placement, and does not claim to track an arbitrary moving object. A two-finger tap still controls recording visibility.
+- Attached effects have their own audio context and a one-at-a-time limit. Existing ground/show limits still apply. Preview resources are disposed on cancel/confirm; new target models process locally without uploading frames.
+
+Verification: all 95 automated tests pass, including the original 85. Added coverage checks projection/crop, invalid faces, acquisition and loss, ambiguous face crossings, fair worker scheduling and failure isolation, actual-app head placement before floor acquisition, spark detachment, free placement and Atom gating, no head takeover of floor/sky, and simultaneous head 10,000-wala/palm spinner cleanup. Production build and source checks pass.
+
+Limitations remain: estimated face size/depth, no hair/hat mesh or physical occlusion, no back-of-head detection, no arbitrary-object pose/depth tracking. Motion-only free placement cannot promise the positional stability of a complete SLAM map. The current audit environment cannot run WebGL/camera AR, so head rendering, tracking quality and performance still require real-phone validation before broad launch. The audit below records the preceding baseline and is retained for comparison.
+
 **Release recommendation: limited beta, with a real-device gate before a broad launch.** The existing experience is already public. This audit found and corrected reproducible defects; it does not establish that the product has zero bugs. The current product supports ground placement, an estimated table height, hand attachment and distant sky effects. “Place on any object or person” is an expansion of those capabilities, not a claim the current version can support.
 
 **Evidence and verification limits**

@@ -15,6 +15,9 @@ import { HandAnchor, palmPose, handEffectScale } from './hand-anchor.mjs';
 import { HandObjectMotion, PALM_FUSES } from './hand-motion.mjs';
 import { HandStabilizer } from './hand-stabilizer.mjs';
 import { createHandTracking } from './hand-tracking.mjs';
+import { HeadTargets, headPoses, freePose } from './object-placement.mjs';
+const headTargets = new HeadTargets(), headStabilizer = new HandStabilizer(), inferenceGate = {};
+let headTracker = null, objectAudio = null, objectPlacement = null, freeEditing = false, freePoint = { x: .5, y: .5 }, freeDistance = 1.2, freeSize = 1;
 const handAnchor = new HandAnchor();
 const handStabilizer = new HandStabilizer();
 let handTracker = null, handWasReady = false, handAudio = null, skyAudio = null;
@@ -63,13 +66,19 @@ const scene = new THREE.Scene();
 const world = new THREE.Group(); scene.add(world);
 const skyWorld = new THREE.Group(); scene.add(skyWorld);
 const skyTracking = new SkyTracking();
+// Same stable coordinate frame as the sky bridge, independently visible while
+// a head supplies its own image pose before world tracking has acquired a floor.
+const objectFrame = new THREE.Group(); scene.add(objectFrame);
+const objectWorld = new THREE.Group(); objectFrame.add(objectWorld);
+const objectGuide = new THREE.Group(); objectFrame.add(objectGuide);
+const objectAvailable = () => skyAvailable() || Boolean(objectPlacement?.type === 'head' && headTargets.get(objectPlacement.id, last));
 const palmWorld = new THREE.Group(); scene.add(palmWorld); palmWorld.visible = false;
 const handGuide = new THREE.Group(); scene.add(handGuide); handGuide.visible = false;
 let effectSpace = world;
 const roomPaused = () => Boolean(playing && worldTracking?.active && !worldTracking.ready);
 let skyMotionReady = false;
 const skyAvailable = () => !worldTracking?.active || worldTracking.ready || skyMotionReady;
-const spacePaused = space => space === skyWorld ? !skyAvailable() : roomPaused() || (space === palmWorld && !palmMotion);
+const spacePaused = space => space === skyWorld ? !skyAvailable() : (space === objectWorld || space === objectFrame) ? !objectAvailable() : roomPaused() || (space === palmWorld && !palmMotion);
 addCrackerLights(scene);
 const camera = new THREE.PerspectiveCamera(70, 1, 0.05, 900);
 scene.add(camera);
@@ -130,7 +139,7 @@ let sceneLight = 0;
 const sceneLightC = new THREE.Vector3(), sceneLightPoint = new THREE.Vector3(), projectedLight = new THREE.Vector3();
 let sceneLightSpace = world, sceneLightLocal = false;
 function lightScene(c, amt, point = null) {
-  if (effectSpace === palmWorld || amt < sceneLight * .6) return;
+  if (effectSpace === palmWorld || effectSpace === objectWorld || amt < sceneLight * .6) return;
   sceneLight = Math.max(sceneLight, amt);
   sceneLightC.set(c[0], c[1], c[2]);
   sceneLightSpace = effectSpace; sceneLightLocal = Boolean(point);
@@ -159,7 +168,7 @@ for (let i = 0; i < 8; i++) {
 }
 let poolN = 0;
 function floorGlow(x, z, c, intensity, radius, groundY = floorY) {
-  if (poolN >= pools.length) return;
+  if (poolN >= pools.length || effectSpace === objectWorld) return;
   if (effectSpace === palmWorld && palmMotion && palmMotion.state !== 'held' && palmMotion.position.y > palmMotion.floorY + .01) return;
   const m = pools[poolN++];
   m.position.set(x, groundY + .004, z);
@@ -241,11 +250,12 @@ scene.add(sparks);
 function spawn(x, y, z, vx, vy, vz, life, size, c1, c2, drag, grav, flag = 0, tl = 0, str = .033, glow = 0, groundY = floorY) {
   const i = head; head = (head + 1) % N;
   P.x[i] = x; P.y[i] = y; P.z[i] = z; P.vx[i] = vx; P.vy[i] = vy; P.vz[i] = vz;
-  P.hand[i] = effectSpace === palmWorld ? 1 : 0; P.sky[i] = effectSpace === skyWorld ? 1 : 0;
+  P.hand[i] = effectSpace === palmWorld ? 1 : 0; P.sky[i] = effectSpace === skyWorld ? 1 : effectSpace === objectFrame || effectSpace === objectWorld ? 2 : 0;
   P.age[i] = 0; P.life[i] = life; P.size[i] = size;
   P.r[i] = c1[0]; P.g[i] = c1[1]; P.b[i] = c1[2]; P.r2[i] = c2[0]; P.g2[i] = c2[1]; P.b2[i] = c2[2];
   P.drag[i] = drag; P.grav[i] = grav; P.flag[i] = flag; P.tl[i] = tl; P.tt[i] = 0; P.str[i] = str; P.glow[i] = glow; P.groundY[i] = groundY;
   if (P.hand[i]) particleToRoom(P, i);
+  else if (effectSpace === objectWorld) particleToObjectFrame(P, i);
   return i;
 }
 let quality = 1;
@@ -255,7 +265,7 @@ function updateSparks(dt) {
   const trailGap = quality > .8 ? .03 : .05;
   for (let i = 0; i < N; i++) {
     if (P.life[i] <= 0) continue;
-    effectSpace = P.sky[i] ? skyWorld : P.hand[i] ? palmWorld : world;
+    effectSpace = P.sky[i] === 2 ? objectFrame : P.sky[i] ? skyWorld : P.hand[i] ? palmWorld : world;
     if (spacePaused(effectSpace)) continue;
     P.age[i] += dt;
     const fl = P.flag[i];
@@ -271,8 +281,8 @@ function updateSparks(dt) {
     if (fl & F.SEG) P.y[i] -= P.grav[i] * P.age[i] * dt; // a trail piece stays put and only sags; its velocity just sets its length
     else {
       const damp = Math.exp(-P.drag[i] * dt);
-      P.vx[i] = P.vx[i] * damp + (P.sky[i] ? 1.3 * (1 - damp) : 0);
-      P.vy[i] = P.vy[i] * damp - P.grav[i] * dt; P.vz[i] = P.vz[i] * damp + (P.sky[i] ? .45 * (1 - damp) : 0);
+      P.vx[i] = P.vx[i] * damp + (P.sky[i] === 1 ? 1.3 * (1 - damp) : 0);
+      P.vy[i] = P.vy[i] * damp - P.grav[i] * dt; P.vz[i] = P.vz[i] * damp + (P.sky[i] === 1 ? .45 * (1 - damp) : 0);
       P.x[i] += P.vx[i] * dt; P.y[i] += P.vy[i] * dt; P.z[i] += P.vz[i] * dt;
     }
     if ((fl & F.BOUNCE) && P.y[i] < P.groundY[i]) { P.y[i] = P.groundY[i]; P.vy[i] *= -.32; P.vx[i] *= .55; P.vz[i] *= .55; }
@@ -357,12 +367,13 @@ smoke.frustumCulled = false; smoke.renderOrder = 2;
 scene.add(smoke);
 function puff(x, y, z, vx, vy, vz, life, size, grow, lit, base, alpha, drag, grav, wind, hard = 0, groundY = floorY) {
   const i = sHead; sHead = (sHead + 1) % M;
-  S.hand[i] = effectSpace === palmWorld ? 1 : 0; S.sky[i] = effectSpace === skyWorld ? 1 : 0;
+  S.hand[i] = effectSpace === palmWorld ? 1 : 0; S.sky[i] = effectSpace === skyWorld ? 1 : effectSpace === objectFrame || effectSpace === objectWorld ? 2 : 0;
   S.x[i] = x; S.y[i] = y; S.z[i] = z; S.vx[i] = vx; S.vy[i] = vy; S.vz[i] = vz; S.age[i] = 0; S.life[i] = life; S.size[i] = size; S.grow[i] = grow;
   S.rot[i] = rand(0, TAU); S.spin[i] = rand(-.5, .5) * (hard ? 12 : 1);
   S.r[i] = lit[0]; S.g[i] = lit[1]; S.b[i] = lit[2]; S.r2[i] = base[0]; S.g2[i] = base[1]; S.b2[i] = base[2];
   S.a[i] = alpha; S.drag[i] = drag; S.grav[i] = grav; S.wind[i] = wind; S.hard[i] = hard; S.groundY[i] = groundY;
   if (S.hand[i]) particleToRoom(S, i);
+  else if (effectSpace === objectWorld) particleToObjectFrame(S, i);
 }
 const particlePoint = new THREE.Vector3(), particleVelocity = new THREE.Vector3(), particleMatrix = new THREE.Matrix3();
 function particleToRoom(store, i) {
@@ -376,10 +387,26 @@ function particleToRoom(store, i) {
   if (store.grow) { store.grow[i] *= scale; store.wind[i] *= scale; }
   store.groundY[i] = palmMotion?.floorY ?? floorY; store.hand[i] = 0;
 }
+// Detach emitted sparks/smoke from the moving crown immediately, keeping the
+// settled camera frame. A nod moves the nozzle, never the old spark trail.
+function particleToObjectFrame(store, i) {
+  objectWorld.updateMatrix();
+  particlePoint.set(store.x[i], store.y[i], store.z[i]).applyMatrix4(objectWorld.matrix);
+  particleMatrix.setFromMatrix4(objectWorld.matrix);
+  particleVelocity.set(store.vx[i], store.vy[i], store.vz[i]).applyMatrix3(particleMatrix);
+  store.x[i] = particlePoint.x; store.y[i] = particlePoint.y; store.z[i] = particlePoint.z;
+  store.vx[i] = particleVelocity.x; store.vy[i] = particleVelocity.y; store.vz[i] = particleVelocity.z;
+  const scale = objectWorld.scale.x;
+  store.size[i] *= scale; store.grav[i] *= scale;
+  if (store.grow) { store.grow[i] *= scale; store.wind[i] *= scale; }
+  // Unknown surfaces must not produce a fictitious horizontal collision shelf.
+  store.groundY[i] = -1000;
+  if (store.flag) store.flag[i] &= ~F.BOUNCE;
+}
 function updateSmoke(dt) {
   let n = 0;
   for (let i = 0; i < M; i++) {
-    if (S.life[i] <= 0 || spacePaused(S.sky[i] ? skyWorld : S.hand[i] ? palmWorld : world)) continue;
+    if (S.life[i] <= 0 || spacePaused(S.sky[i] === 2 ? objectFrame : S.sky[i] ? skyWorld : S.hand[i] ? palmWorld : world)) continue;
     S.age[i] += dt;
     if (S.age[i] >= S.life[i]) { S.life[i] = 0; continue; }
     const damp = Math.exp(-S.drag[i] * dt);
@@ -418,6 +445,7 @@ function syncAudioPlayback() {
   sync(actx, spacePaused(effectSpace));
   if (handAudio?.actx !== actx) sync(handAudio?.actx, spacePaused(palmWorld));
   if (skyAudio?.actx !== actx) sync(skyAudio?.actx, spacePaused(skyWorld));
+  if (objectAudio?.actx !== actx) sync(objectAudio?.actx, objectSoundPaused());
 }
 function ensureAudio() {
   if (!actx) {
@@ -578,7 +606,7 @@ function placementPoint(cx, cy) {
 function panFor(p) { tmp.copy(p); if (effectSpace !== world) effectSpace.localToWorld(tmp); tmp.applyMatrix4(camera.matrixWorldInverse); return clamp(tmp.x / Math.max(1, tmp.length()), -1, 1) * .85; }
 function burnTip(model, progress, flame) {
   const tip = model.burn(progress, flame);
-  return effectSpace === palmWorld ? palmWorld.worldToLocal(tip) : tip;
+  return effectSpace !== world ? effectSpace.worldToLocal(tip) : tip;
 }
 function randDir() { const u = Math.random() * 2 - 1, t = Math.random() * TAU, s = Math.sqrt(1 - u * u); return [Math.cos(t) * s, u, Math.sin(t) * s]; }
 
@@ -587,11 +615,12 @@ const emitters = [];
 function withEffectSpace(space, work) {
   const before = effectSpace, sound = { actx, master, noiseBuf, verbIn };
   effectSpace = space;
-  if (space !== world) ({ actx = null, master = null, noiseBuf = null, verbIn = null } = (space === palmWorld ? handAudio : skyAudio) || {});
+  if (space !== world) ({ actx = null, master = null, noiseBuf = null, verbIn = null } = (space === palmWorld ? handAudio : space === skyWorld ? skyAudio : objectAudio) || {});
   try { return work(); }
   finally {
     if (space === palmWorld) handAudio = { actx, master, noiseBuf, verbIn };
     if (space === skyWorld) skyAudio = { actx, master, noiseBuf, verbIn };
+    if (space === objectWorld || space === objectFrame) objectAudio = { actx, master, noiseBuf, verbIn };
     ({ actx, master, noiseBuf, verbIn } = sound); effectSpace = before;
   }
 }
@@ -827,6 +856,7 @@ function contactShadow(x, z, radius, opacity, groundY = floorY) {
   m.scale.setScalar(radius);
   m.frustumCulled = false; m.renderOrder = 1;
   m.userData.contactShadow = true;
+  if (effectSpace === objectWorld) m.visible = false;
   effectSpace.add(m);
   return m;
 }
@@ -851,7 +881,7 @@ const BOMBS = {
 function bomb(p, b) {
   const groundY = p.y;
   const onPalm = effectSpace === palmWorld;
-  const { power } = b, fuse = onPalm ? PALM_FUSES[b.kind] : b.fuse;
+  const { power } = b, fuse = onPalm || effectSpace === objectWorld ? PALM_FUSES[b.kind] : b.fuse;
   const model = createCrackerModel(b.kind, TEX), R = .35 + .65 * power;
   let pan = panFor(p);
   model.group.position.copy(p); effectSpace.add(model.group);
@@ -867,7 +897,8 @@ function bomb(p, b) {
       floorGlow(p.x, p.z, [1, .55, .2], .12 + Math.random() * .1, .4, groundY);
       return true;
     }
-    const grounded = !onPalm || palmMotion?.state === 'landed';
+    const grounded = effectSpace !== objectWorld && (!onPalm || palmMotion?.state === 'landed');
+    if (effectSpace === objectWorld && objectPlacement) objectPlacement.detached = true;
     if (onPalm) palmMotion?.burst(); // Freeze this burst at its current room position.
     pan = panFor(p);
     dropProp(prop);
@@ -1016,7 +1047,7 @@ function sanguchakram(p) {
 const WALAS = WALA_CONFIGS;
 function wala(p, w) {
   const groundY = p.y, n = w.n, large = n === 10000;
-  const layout = createWalaLayout(p, effectSpace === palmWorld ? new THREE.Quaternion() : camera.quaternion, w);
+  const layout = createWalaLayout(p, effectSpace !== world ? new THREE.Quaternion() : camera.quaternion, w);
   const { points: pts, directions, cordPoints, scales, shades, kicks } = layout;
   const burn = createWalaBurn(w, layout.seed), clock = { value: 0 };
   const mat = new THREE.MeshStandardMaterial({ map: TEX.wala, roughness: .91, toneMapped: false });
@@ -1182,7 +1213,7 @@ function hint(text, ms) {
 }
 const toldMode = {};
 function setMode(m) {
-  if (playing && handAnchor.ready) m = 'ground';
+  if (freeEditing || (playing && handAnchor.ready)) m = 'ground';
   if (m === mode) return;
   mode = m;
   updateModeLabel();
@@ -1202,9 +1233,15 @@ surfaceBtn.addEventListener('click', () => {
 let lastSkyTap = -Infinity;
 function fireAt(cx, cy) {
   if (document.hidden || !Number.isFinite(cx) || !Number.isFinite(cy) || atomSequence.busy) return false;
-  const onPalm = playing && handAnchor.ready;
+  if (freeEditing) { freePoint = { x: cx / W, y: cy / H }; updateObjectPreview(); return false; }
+  const target = playing && mode === 'ground' ? headTargets.at(cx / W, cy / H, last) : null;
+  if (!target && playing && mode === 'ground' && headTargets.candidateAt(cx / W, cy / H, last)) { hint('Hold steady for head placement.', 1500); return false; }
+  const onPalm = !target && playing && handAnchor.ready;
   if (onPalm) setMode('ground');
-  if (worldTracking?.active && (mode === 'sky' ? !skyAvailable() : !worldTracking.ready)) return false;
+  if (!target && worldTracking?.active && (mode === 'sky' ? !skyAvailable() : !worldTracking.ready)) {
+    if (mode === 'ground') { hint('Still finding a surface. Use Place anywhere to choose your own spot.', 3500); $('freeBtn').hidden = false; }
+    return false;
+  }
   if (onPalm && emitters.some(e => e.ground && e.space === palmWorld)) { hint('Let this palm cracker finish first.', 2000); return false; }
   const ray = rayAt(cx, cy), id = selected[mode === 'sky' && royalOpen ? 'royal' : mode];
   if (mode === 'sky') {
@@ -1230,8 +1267,9 @@ function fireAt(cx, cy) {
   if (id === 'flower' && emitters.filter(e => e.flower).length >= 3) { hint('Let a flower pot finish before adding another.', 2000); return false; }
   if (id === 'spinner' && emitters.filter(e => e.spinner).length >= 3) { hint('Let a Sanguchakram finish before adding another.', 2000); return false; }
   if (id === 'wala10000' && emitters.some((e) => e.largeWala)) { hint('Let this 10,000 wala finish first.', 2000); return false; }
+  if (target) return placeObject('head', target);
   const spot = onPalm ? new THREE.Vector3(0, 0, 0) : placementPoint(cx, cy);
-  if (!spot) { hint("Move slowly and aim at a nearby surface.", 2500); return false; }
+  if (!spot) { hint("No surface found here. Tap Place anywhere to position it yourself.", 2500); return false; }
   placementGuide.place();
   ring.visible = false; ring.material.opacity = 0;
   if (id === 'atom') {
@@ -1269,6 +1307,151 @@ function fireAt(cx, cy) {
     else wala(spot, WALAS[id]);
   });
 }
+
+/* ---------- Head attachment and deliberate free placement ---------- */
+let objectPreview = null, previewKind = null;
+const objectBusy = () => emitters.some(e => e.space === objectWorld);
+const objectScale = (kind, multiplier) => handEffectScale(kind, .10) * multiplier;
+function detachHead() {
+  if (objectPlacement?.type === 'head') objectPlacement.detached = true;
+  headTargets.clear();
+}
+const objectSoundPaused = () => spacePaused(objectWorld) && !(objectPlacement && atomSequence.phase === 'ringing');
+function syncObjectAudio() {
+  const context = objectAudio?.actx;
+  if (!context) return;
+  if (document.hidden || objectSoundPaused()) { if (context.state === 'running') context.suspend()?.catch(() => {}); }
+  else if (context.state !== 'running') context.resume()?.catch(() => {});
+}
+function objectPose(target) {
+  if (target.framePosition) return { position: target.framePosition.clone(), quaternion: target.frameQuaternion.clone() };
+  const position = objectFrame.worldToLocal(target.worldPosition.clone());
+  const quaternion = objectFrame.getWorldQuaternion(new THREE.Quaternion()).invert().multiply(target.worldQuaternion);
+  return { position, quaternion };
+}
+function startAutoHeadTracking() {
+  headTracker = createHandTracking({ video, inferenceGate, intervals: [110, 240],
+    workerURL: new URL('./head-worker.js', import.meta.url),
+    captureContext: () => ({ projectionMatrix: camera.projectionMatrix.clone(), matrix: camera.matrixWorld.clone(),
+      quaternion: camera.quaternion.clone(), frameInverse: skyWorld.matrixWorld.clone().invert(),
+      frameQuaternion: skyWorld.getWorldQuaternion(new THREE.Quaternion()).invert(), width: W, height: H }),
+    onResult(result, time, frame) {
+      if (!frame) return;
+      const poses = headPoses(result, frame, frame.width, frame.height, video.videoWidth, video.videoHeight);
+      for (const pose of poses) {
+        pose.worldPosition = pose.position.clone().applyMatrix4(frame.matrix);
+        pose.worldQuaternion = frame.quaternion.clone().multiply(pose.quaternion);
+        pose.framePosition = pose.worldPosition.clone().applyMatrix4(frame.frameInverse);
+        pose.frameQuaternion = frame.frameQuaternion.clone().multiply(pose.worldQuaternion);
+      }
+      headTargets.update(poses, time);
+    },
+    onLost() { headTargets.clear(); },
+    onError() { detachHead(); hint('Head tracking is unavailable. Palm, floor, sky and Place anywhere are still available.', 4000); },
+  });
+  headTracker.start().catch(() => { headTargets.clear(); hint('Head detection is unavailable here. Use Place anywhere.', 3000); });
+}
+function updateObjectPlacement(now, dt) {
+  if (objectPlacement?.type === 'head' && !objectPlacement.detached) {
+    const target = headTargets.get(objectPlacement.id, now);
+    if (target) {
+      const pose = objectPose(target), visual = headStabilizer.update(pose.position, pose.quaternion, .15, target.time, String(target.id));
+      const blend = 1 - Math.exp(-dt * 25);
+      objectWorld.position.lerp(visual.position, blend); objectWorld.quaternion.slerp(visual.quaternion, blend);
+      objectWorld.updateMatrixWorld(true); objectPlacement.lastSeen = target.time;
+    } else if (now - objectPlacement.lastSeen > 600) {
+      objectPlacement.detached = true;
+      hint('Head moved out of view. This effect stays where it was.', 2500);
+    }
+  }
+  if (objectPlacement && !objectBusy() && !atomSequence.busy) objectPlacement = null;
+  objectWorld.visible = Boolean(objectPlacement) || objectBusy();
+  updateObjectPreview();
+  const targets = headTargets.targets.filter(p => p.streak >= 3 && now - p.time < 350);
+  for (let i = 0; i < 2; i++) {
+    const cue = $('headCue' + i), target = targets[i];
+    cue.hidden = !playing || !target || mode !== 'ground' || freeEditing || uiHidden || !placementGuide.armed || atomSequence.busy || objectBusy();
+    if (!cue.hidden) {
+      cue.style.left = `${clamp(target.center.x, .08, .92) * 100}%`;
+      cue.style.top = `${clamp(target.bounds.top, .10, .75) * 100}%`;
+    }
+  }
+}
+function clearObjectPreview() {
+  objectPreview?.dispose(); objectPreview = null; previewKind = null; objectGuide.visible = false;
+}
+function updateObjectPreview() {
+  if (!freeEditing) return;
+  const kind = selected.ground;
+  if (kind !== previewKind) {
+    clearObjectPreview(); previewKind = kind;
+    if (WALAS[kind]) {
+      const layout = createWalaLayout(new THREE.Vector3(), new THREE.Quaternion(), { ...WALAS[kind], n: 100, strands: 2 }, 18);
+      const group = new THREE.Mesh(new THREE.TubeGeometry(new THREE.CatmullRomCurve3(layout.cordPoints), 80, .022, 6, false),
+        new THREE.MeshStandardMaterial({ color: 0xc43120, roughness: .85 }));
+      objectPreview = { group, dispose() { group.removeFromParent(); group.geometry.dispose(); group.material.dispose(); } };
+    } else { objectPreview = createCrackerModel(kind, TEX); objectPreview.extinguish(); }
+    objectGuide.add(objectPreview.group);
+  }
+  const pose = freePose(camera, freePoint.x, freePoint.y, freeDistance, objectFrame);
+  objectGuide.visible = Boolean(pose) && !uiHidden;
+  if (pose) {
+    objectGuide.position.copy(pose.position); objectGuide.quaternion.copy(pose.quaternion);
+    objectGuide.scale.setScalar(objectScale(kind, 6 * freeSize)); objectGuide.updateMatrixWorld(true);
+  }
+  $('placeBtn').disabled = !skyAvailable() || atomSequence.busy || objectBusy();
+  $('placementHelp').textContent = skyAvailable() ? (worldTracking?.active && !worldTracking.ready ? 'Approximate placement · move gently' : 'Tap a spot · adjust · place') : 'Enable motion or move gently to establish tracking.';
+}
+function exitFreePlacement() {
+  freeEditing = false; $('placementControls').hidden = true; clearObjectPreview(); placementGuide.select(); updateModeLabel();
+}
+function placeObject(type, target = null) {
+  if (document.hidden || atomSequence.busy || objectBusy()) { hint('Let this attached effect finish first.', 2200); return false; }
+  const kind = selected.ground;
+  if (emitters.filter(e => e.ground).length >= 7 || (kind === 'flower' && emitters.filter(e => e.flower).length >= 3) ||
+    (kind === 'spinner' && emitters.filter(e => e.spinner).length >= 3) || (kind === 'wala10000' && emitters.some(e => e.largeWala))) return false;
+  let pose, scale;
+  if (type === 'head') {
+    if (!target || !headTargets.get(target.id, last)) return false;
+    pose = objectPose(target); scale = objectScale(kind, 1.65);
+    headStabilizer.time = -Infinity;
+    headStabilizer.update(pose.position, pose.quaternion, .15, target.time, String(target.id));
+  } else {
+    if (!freeEditing || !skyAvailable()) return false;
+    updateObjectPreview(); pose = { position: objectGuide.position.clone(), quaternion: objectGuide.quaternion.clone() };
+    scale = objectGuide.scale.x;
+  }
+  objectWorld.position.copy(pose.position); objectWorld.quaternion.copy(pose.quaternion); objectWorld.scale.setScalar(scale);
+  objectWorld.updateMatrixWorld(true);
+  objectPlacement = { type, id: target?.id, lastSeen: target?.time ?? last, detached: type !== 'head' };
+  if (freeEditing) exitFreePlacement();
+  placementGuide.place(); ring.visible = false; ring.material.opacity = 0;
+  for (let i = 0; i < 2; i++) $('headCue' + i).hidden = true;
+  if (kind === 'atom') {
+    atomRun++; atomOnPalm = false; atomSequence.begin();
+    $('effectStatus').hidden = false; $('effectStatus').textContent = 'Atom bomb · fuse lit';
+  }
+  withEffectSpace(objectWorld, () => {
+    ensureAudio(); const origin = new THREE.Vector3();
+    if (BOMBS[kind]) bomb(origin, BOMBS[kind]);
+    else if (kind === 'flower') flowerPot(origin);
+    else if (kind === 'spinner') sanguchakram(origin);
+    else wala(origin, WALAS[kind]);
+  });
+  objectWorld.visible = true;
+  hint(type === 'head' ? 'A little celebration on your head. Move gently!' : worldTracking?.active && !worldTracking.ready ? 'Placed. Keep your phone near this spot while tracking settles.' : 'Placed. Move around to see it in your space.', 3500);
+  return true;
+}
+$('freeBtn').addEventListener('click', () => {
+  if (atomSequence.busy || objectBusy()) { hint('Let this effect finish first.', 2000); return; }
+  freeEditing = true; freePoint = { x: .5, y: .44 }; freeDistance = 1.2; freeSize = 1;
+  $('placementDepth').value = String(freeDistance); $('placementSize').value = String(freeSize);
+  $('placementControls').hidden = false; setMode('ground'); updateModeLabel(); updateObjectPreview();
+});
+$('cancelPlacement').addEventListener('click', exitFreePlacement);
+$('placeBtn').addEventListener('click', () => placeObject('free'));
+$('placementDepth').addEventListener('input', e => { freeDistance = clamp(Number(e.target.value) || 1.2, .3, 4); updateObjectPreview(); });
+$('placementSize').addEventListener('input', e => { freeSize = clamp(Number(e.target.value) || 1, .25, 2); updateObjectPreview(); });
 
 /* ---------- Motion and look ---------- */
 const orient = { a: 0, b: 0, g: 0, ok: false, time: -Infinity };
@@ -1430,7 +1613,7 @@ function cancelPalmEffect() {
 }
 function startAutoHandTracking() {
   handTracker?.stop();
-  handTracker = createHandTracking({ video,
+  handTracker = createHandTracking({ video, inferenceGate,
     captureContext: () => ({ projectionMatrix: camera.projectionMatrix.clone(), matrix: camera.matrixWorld.clone(),
       quaternion: camera.quaternion.clone(), width: W, height: H }),
     onResult(result, time, frame) {
@@ -1449,7 +1632,9 @@ function startAutoHandTracking() {
     },
   });
   // Background download/inference must never hold up the floor camera.
-  handTracker.start().catch(() => {
+  setTimeout(() => { if (playing && !headTracker) startAutoHeadTracking(); }, 1200);
+  handTracker.start().then(() => { if (playing && !headTracker) startAutoHeadTracking(); }).catch(() => {
+    if (playing && !headTracker) startAutoHeadTracking();
     handAnchor.invalidate(); palmMotion?.release(performance.now()); handState();
     hint('Palm tracking is unavailable here. Floor and sky still work.', 4000);
   });
@@ -1487,7 +1672,7 @@ function toggleUi(force) {
   if (uiHidden) hint('Controls hidden for recording. Two-finger tap brings them back.', 2400);
 }
 stage.addEventListener('pointerdown', (e) => {
-  if (!playing || (e.target.closest && e.target.closest('button, #picker'))) return;
+  if (!playing || (e.target.closest && e.target.closest('button, input, #picker, #placementControls'))) return;
   e.preventDefault();
   ensureAudio();
   fingers.set(e.pointerId, performance.now());
@@ -1522,7 +1707,7 @@ stage.addEventListener('pointercancel', endPress);
 stage.addEventListener('lostpointercapture', endPress);
 stage.addEventListener('contextmenu', (e) => e.preventDefault());
 function holdRepeat(dt) {
-  if (document.hidden || atomSequence.busy || !press || mode !== 'sky' || royalOpen || ['finale', 'twelve'].includes(selected.sky) || (!gyro && press.dragged)) return;
+  if (document.hidden || freeEditing || atomSequence.busy || !press || mode !== 'sky' || royalOpen || ['finale', 'twelve'].includes(selected.sky) || (!gyro && press.dragged)) return;
   press.t += dt;
   if (press.t >= REPEAT) { press.t = 0; press.fired = true; fireAt(press.x, press.y); }
 }
@@ -1530,6 +1715,7 @@ function applyMute() {
   if (master) master.gain.value = muted ? 0 : .9;
   if (handAudio?.master) handAudio.master.gain.value = muted ? 0 : .9;
   if (skyAudio?.master) skyAudio.master.gain.value = muted ? 0 : .9;
+  if (objectAudio?.master) objectAudio.master.gain.value = muted ? 0 : .9;
   $('icoSound').hidden = muted; $('icoMuted').hidden = !muted;
   $('muteBtn').setAttribute('aria-label', muted ? 'Turn sound on' : 'Mute sound');
 }
@@ -1543,6 +1729,7 @@ document.addEventListener('visibilitychange', () => {
   skyTracking.invalidateMotion(performance.now()); orient.ok = false; skyMotionReady = false;
   if (document.hidden) worldTracking?.pause(); else worldTracking?.resume();
   if (document.hidden) handTracker?.pause(); else handTracker?.resume();
+  if (document.hidden) { headTracker?.pause(); detachHead(); } else headTracker?.resume();
   syncAudioPlayback();
 });
 
@@ -1552,6 +1739,11 @@ async function requestMotionAccess() {
   try { return await DeviceOrientationEvent.requestPermission(); } catch { return 'denied'; }
 }
 function updateModeLabel() {
+  $('freeBtn').hidden = mode !== 'ground' || freeEditing;
+  if (freeEditing) {
+    modeEl.textContent = 'Place anywhere'; surfaceBtn.hidden = true; $('trackingStatus').hidden = true;
+    $('motionBtn').hidden = skyAvailable() || gyro; $('motionBtn').textContent = 'Enable motion'; return;
+  }
   if (playing && handAnchor.ready) {
     modeEl.textContent = 'Palm · Auto'; surfaceBtn.hidden = true; $('motionBtn').hidden = true;
     $('trackingStatus').hidden = true; return;
@@ -1623,6 +1815,8 @@ addEventListener('pagehide', (event) => {
   clearInput();
   skyTracking.invalidateMotion(performance.now()); orient.ok = false; skyMotionReady = false;
   if (event.persisted) handTracker?.pause(); else handTracker?.stop();
+  if (event.persisted) headTracker?.pause(); else headTracker?.stop();
+  detachHead();
   if (event.persisted) worldTracking?.pause();
   else {
     worldTracking?.stop();
@@ -1632,18 +1826,19 @@ addEventListener('pagehide', (event) => {
   if (actx) actx.suspend();
   if (handAudio?.actx) handAudio.actx.suspend();
   if (skyAudio?.actx) skyAudio.actx.suspend();
+  if (objectAudio?.actx) objectAudio.actx.suspend();
 });
 addEventListener('pageshow', (event) => {
   if (!event.persisted || document.hidden) return;
   skyTracking.invalidateMotion(performance.now()); orient.ok = false; skyMotionReady = false;
   press = null; fingers.clear(); last = performance.now();
   worldTracking?.resume();
-  handTracker?.resume();
+  handTracker?.resume(); headTracker?.resume();
   if (playing) ensureAudio();
 });
 addEventListener('keydown', e => {
   if (e.target.matches('input, textarea')) return;
-  if (e.key === 'Escape') toggleUi(false);
+  if (e.key === 'Escape') { if (freeEditing) exitFreePlacement(); toggleUi(false); }
   if (e.code === 'Space' && playing && !e.target.closest('button')) { e.preventDefault(); fireAt(W / 2, H * .35); }
 });
 
@@ -1812,6 +2007,7 @@ const ring = new THREE.Mesh(new THREE.RingGeometry(.3, .307, 72).rotateX(-Math.P
 ring.frustumCulled = false; ring.renderOrder = 4;
 world.add(ring);
 function updateRing(time) {
+  if (freeEditing) { ring.visible = false; ring.material.opacity = 0; return; }
   if (playing && handAnchor.ready) {
     if (ring.parent !== handGuide) handGuide.add(ring);
     ring.visible = placementGuide.armed && !uiHidden && !atomSequence.busy && !emitters.some(e => e.ground && e.space === palmWorld);
@@ -1851,7 +2047,7 @@ function step(now) {
   const raw = Math.max(0, (now - last) / 1000);
   const dt = Math.min(.05, raw);
   if (playing) {
-    handTracker?.tick(now); handAnchor.fresh(now);
+    handTracker?.tick(now); headTracker?.tick(now); handAnchor.fresh(now);
     if (handWasReady !== handAnchor.ready) handState();
     if (handAnchor.ready) {
       const pose = handAnchor.pose;
@@ -1890,6 +2086,10 @@ function step(now) {
   if (!playing) { look.yaw = Math.sin(time * .1) * .04; look.pitch = .14; attract(dt); }
   updateCamera(dt);
   skyWorld.visible = skyAvailable();
+  objectFrame.position.copy(skyWorld.position); objectFrame.quaternion.copy(skyWorld.quaternion); objectFrame.updateMatrixWorld(true);
+  updateObjectPlacement(now, dt);
+  objectFrame.visible = playing && (objectAvailable() || headTargets.targets.some(p => now - p.time < 350));
+  syncObjectAudio();
   poolN = 0;
   if (playing) {
     holdRepeat(dt); autoDim(dt); adaptQuality(raw, dt);

@@ -46,13 +46,18 @@ test('actual app: placement, new ground effects, release regressions and mixed-e
   let source = await readFile(path, 'utf8');
   source = source.replace("import * as THREE from 'three';", 'const THREE = globalThis.__nammaTestThree;');
   source = source.replace(/from '(\.\/[^']+)'/g, (_, p) => `from '${new URL(p, path).href}'`);
-  source += `\nexport const qa = { camera, world, skyWorld, skyTracking, palmWorld, handGuide, handAnchor, ring, emitters, P, S, pulses, selected, atomSequence, placementGuide,
+  source += `\nexport const qa = { headTargets, objectWorld, objectFrame, objectGuide, placeObject, updateObjectPlacement, exitFreePlacement,
+    get objectPlacement() { return objectPlacement; }, syncObjectAudio,
+    useObjectAudio(context) { objectAudio = context ? { actx: context, master: context.createGain() } : null; },
+    heads(poses) { for (const offset of [-220, -110, 0]) headTargets.update(poses, last + offset); },
+    get now() { return last; },
+    camera, world, skyWorld, skyTracking, palmWorld, handGuide, handAnchor, ring, emitters, P, S, pulses, selected, atomSequence, placementGuide,
     get pointerDown() { return Boolean(press); }, get motion() { return palmMotion; },
     sensor(enabled, stale = false) { gyro = enabled; orient.ok = enabled; orient.a = 0; orient.b = 140; orient.g = 0; orient.time = performance.now() - (stale ? 1000 : 0); if (stale) skyTracking.invalidateMotion(performance.now() - 500); },
     useSkyAudio(context) { skyAudio = context ? { actx: context, master: context.createGain() } : null; }, get lettering() { return activeLettering; }, get queuedWish() { return pendingSkyWish; }, cancelPalmEffect, syncAudioPlayback, sparkMat, smokeMat, outHand, sHand, handState,
     fireAt, setMode, updateCamera, updateRing, step, queueSkyWish, writeSky, scatterPaper, updateSmoke, sSize, smokeGeo, trackingState,
     flowerPot, sanguchakram, wala, WALAS, royalShow, finale, rocket, twelveShot, peony, chrysanthemum, goldenRain, crackling, diamondBurst, launch, tone, noise,
-    init() { playing = true; floorY = 0; worldTracking = { active: true, ready: true, hit: () => null }; },
+    init() { playing = true; floorY = 0; worldTracking = { active: true, ready: true, hit: () => null, resize() {} }; },
     setFloor(y) { floorY = y; },
     setTracker(tracker) { worldTracking = tracker; },
     useAudio(context) { actx = context; master = context?.createGain(); verbIn = context?.createGain(); noiseBuf = {}; },
@@ -500,6 +505,83 @@ test('actual app: placement, new ground effects, release regressions and mixed-e
     }
     qa.simulate(12); assert.ok(peak <= 27, `peak sky producers: ${peak}`); assert.equal(qa.emitters.length, 0);
     t.diagnostic(`Audit: 200 taps over 20 simulated seconds; peak sky producers ${peak}; zero after completion.`);
+  });
+
+  await t.test('head taps attach without a floor scan; tracking loss cannot transfer an effect to another head', () => {
+    qa.init(); qa.camera.rotation.set(0, 0, 0); qa.camera.position.set(0, 1.4, 0); qa.camera.updateMatrixWorld(); qa.setMode('ground');
+    qa.skyWorld.position.set(0, 0, 0); qa.skyWorld.quaternion.identity(); qa.skyWorld.updateMatrixWorld(); qa.simulate(.1);
+    const makeHead = (x = .5) => ({ center: { x, y: .35 }, bounds: { left: x - .12, right: x + .12, top: .2, bottom: .5 }, span: .3,
+      worldPosition: new RealThree.Vector3((x - .5) * 2, 1.7, -.8), worldQuaternion: new RealThree.Quaternion(), width: .15 });
+    qa.setTracker({ active: true, ready: false, hit: () => null }); qa.sensor(false); qa.heads([makeHead()]);
+    qa.selected.ground = 'flower'; qa.fireAt(195, 280);
+    assert.equal(qa.objectPlacement.type, 'head'); const id = qa.objectPlacement.id;
+    assert.equal(qa.ring.visible, false); assert.ok(qa.emitters.some(e => e.flower && e.space === qa.objectWorld));
+    assert.equal(qa.world.children.some(o => o.name === 'flower'), false);
+    // Keep this face fresh while a second one appears. Only the selected ID follows.
+    for (let i = 0; i < 12; i++) { qa.headTargets.update([makeHead(.51), makeHead(.85)], qa.now + 100); qa.simulate(.1); }
+    assert.equal(qa.objectPlacement.id, id); assert.ok(qa.objectWorld.position.x < .2);
+    const spark = [...qa.P.life].findIndex((life, i) => life > 0 && qa.P.sky[i] === 2);
+    assert.ok(spark >= 0, 'head emits actual sparks before floor acquisition');
+    const origin = [qa.P.x[spark], qa.P.y[spark], qa.P.z[spark]];
+    qa.objectWorld.position.x += .4; qa.objectWorld.updateMatrixWorld();
+    assert.deepEqual([qa.P.x[spark], qa.P.y[spark], qa.P.z[spark]], origin, 'old sparks do not follow a moved nozzle');
+    qa.headTargets.clear(); qa.setTracker({ active: true, ready: true, hit: () => null }); qa.simulate(.7);
+    assert.equal(qa.objectPlacement.detached, true); const held = qa.objectWorld.position.clone();
+    qa.heads([makeHead(.6)]); qa.simulate(.2); assert.deepEqual(qa.objectWorld.position, held);
+    qa.headTargets.clear(); qa.simulate(20); assert.equal(qa.objectPlacement, null); assert.equal(qa.objectWorld.children.length, 0);
+  });
+
+  await t.test('free placement previews before ignition, stays fixed after walking, and retains Atom gating', () => {
+    qa.init(); qa.headTargets.clear(); qa.setMode('ground'); qa.selected.ground = 'atom';
+    elements.get('freeBtn').handlers.click();
+    assert.equal(elements.get('placementControls').hidden, false); assert.equal(qa.atomSequence.busy, false);
+    elements.get('placementDepth').handlers.input({ target: { value: '2.2' } });
+    elements.get('placementSize').handlers.input({ target: { value: '.7' } });
+    qa.fireAt(230, 360); assert.equal(qa.atomSequence.busy, false, 'preview tap must not ignite');
+    const preview = qa.objectGuide.position.clone();
+    elements.get('placeBtn').handlers.click();
+    assert.equal(qa.objectPlacement.type, 'free'); assert.equal(qa.atomSequence.phase, 'fuse');
+    assert.equal(elements.get('placementControls').hidden, true); assert.deepEqual(qa.objectWorld.position, preview);
+    qa.camera.position.x += 1; qa.camera.rotation.y += .5; qa.camera.updateMatrixWorld(); qa.simulate(1);
+    assert.deepEqual(qa.objectWorld.position, preview); assert.equal(qa.fireAt(195, 422), false);
+    qa.simulate(2.3); assert.equal(qa.atomSequence.phase, 'ringing'); assert.equal(qa.fireAt(195, 422), false);
+    const sound = { state: 'running', createGain: () => ({}), suspend() { this.state = 'suspended'; return Promise.resolve(); }, resume() { this.state = 'running'; return Promise.resolve(); } };
+    qa.useObjectAudio(sound); qa.setTracker({ active: true, ready: false, hit: () => null }); qa.sensor(false); qa.updateCamera(1 / 60);
+    qa.syncObjectAudio(); assert.equal(sound.state, 'running', 'losing a target must not strand the Atom aftertone gate');
+    qa.useObjectAudio(null); qa.init();
+    t.mock.timers.tick(2700); assert.equal(qa.atomSequence.busy, false); qa.simulate(15);
+    assert.equal(qa.objectWorld.children.length, 0);
+    qa.selected.ground = 'wala1000'; elements.get('freeBtn').handlers.click();
+    assert.ok(qa.objectGuide.children.length); elements.get('cancelPlacement').handlers.click();
+    assert.equal(qa.objectGuide.children.length, 0); assert.equal(elements.get('placementControls').hidden, true);
+  });
+
+  await t.test('a pending head blocks accidental floor placement; a confirmed head never hijacks sky or an unrelated floor tap', () => {
+    qa.init(); qa.camera.position.set(0, 1.4, 0); qa.camera.rotation.set(-.6, 0, 0); qa.camera.updateMatrixWorld(); qa.setMode('ground');
+    const pose = { center: { x: .2, y: .25 }, bounds: { left: .1, right: .3, top: .1, bottom: .4 }, span: .2,
+      worldPosition: new RealThree.Vector3(-.3, 1.7, -1), worldQuaternion: new RealThree.Quaternion() };
+    qa.headTargets.clear(); qa.headTargets.update([pose], qa.now); qa.selected.ground = 'spinner';
+    const count = qa.emitters.length; assert.equal(qa.fireAt(78, 211), false); assert.equal(qa.emitters.length, count);
+    qa.heads([pose]); qa.fireAt(300, 550); assert.ok(qa.emitters.some(e => e.spinner && e.space === qa.world));
+    assert.equal(qa.objectPlacement, null);
+    qa.setMode('sky'); qa.selected.sky = 'shot'; qa.fireAt(78, 211); assert.equal(qa.objectPlacement, null);
+    qa.headTargets.clear(); qa.simulate(20);
+  });
+
+  await t.test('miniature 10,000 wala stays on its head while a separate palm spinner keeps its original behavior', () => {
+    qa.init(); qa.camera.position.set(0, 1.4, 0); qa.camera.rotation.set(0, 0, 0); qa.camera.updateMatrixWorld(); qa.setMode('ground');
+    const pose = { center: { x: .25, y: .25 }, bounds: { left: .1, right: .4, top: .1, bottom: .4 }, span: .3,
+      worldPosition: new RealThree.Vector3(-.3, 1.65, -1.2), worldQuaternion: new RealThree.Quaternion() };
+    qa.heads([pose]); qa.selected.ground = 'wala10000'; qa.fireAt(95, 210);
+    const string = qa.objectWorld.getObjectByName('wala-10000'); assert.ok(string?.isInstancedMesh); assert.equal(string.count, 10000);
+    const headPosition = qa.objectWorld.position.clone();
+    qa.palm(palm()); qa.simulateHand(.05); qa.selected.ground = 'spinner'; qa.fireAt(260, 500);
+    assert.ok(qa.emitters.some(e => e.spinner && e.space === qa.palmWorld));
+    assert.ok(qa.emitters.some(e => e.largeWala && e.space === qa.objectWorld));
+    assert.deepEqual(qa.objectWorld.position, headPosition);
+    qa.handAnchor.invalidate(); qa.handState(); qa.headTargets.clear(); qa.simulate(50, 30);
+    assert.equal(qa.objectWorld.children.length, 0); qa.cancelPalmEffect();
+    assert.equal(qa.emitters.length, 0);
   });
 
 });

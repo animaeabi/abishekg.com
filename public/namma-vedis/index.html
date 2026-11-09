@@ -40,6 +40,14 @@
         <svg viewBox="0 0 24 24" id="icoMuted" hidden><path d="M4 9h4l5-4v14l-5-4H4z"/><path d="M17 9l5 6M22 9l-5 6"/></svg>
       </button>
     </div>
+    <div id="headCue0" class="head-cue" hidden aria-hidden="true">Tap head ✦</div><div id="headCue1" class="head-cue" hidden aria-hidden="true">Tap head ✦</div>
+    <button id="freeBtn" class="pill" type="button" hidden>Place anywhere</button>
+    <div id="placementControls" hidden role="group" aria-label="Free placement">
+      <p id="placementHelp" role="status">Tap a spot · adjust · place</p>
+      <label for="placementDepth">Distance <input id="placementDepth" type="range" min="0.3" max="4" step="0.05" value="1.2"></label>
+      <label for="placementSize">Size <input id="placementSize" type="range" min="0.25" max="2" step="0.05" value="1"></label>
+      <div><button id="cancelPlacement" type="button">Cancel</button><button id="placeBtn" type="button">Place cracker</button></div>
+    </div>
     <div id="extraTray"><button class="pill" id="royalBtn" type="button" aria-pressed="false">Grand shows ✦</button><button class="pill" id="wishBtn" type="button">Happy Diwali in the sky</button></div><div id="effectStatus" role="status" hidden></div><div id="trackingStatus" role="status" hidden>Move your phone slowly to find the floor.</div><div id="picker" role="toolbar" aria-label="Firecrackers"></div>
   </div>
   <button id="showBtn" class="round" aria-label="Show controls" hidden>⊕</button><div id="hint" role="status"></div>
@@ -48,7 +56,7 @@
 <section id="start" aria-labelledby="title">
   <small>Happy Diwali</small>
   <span class="tamil-name" lang="ta">நம்ம பட்டாசு</span><h1 id="title" aria-label="Namma Pattas — our fireworks"><span id="rotatingTitle" class="title-word" data-language="Tamil" aria-hidden="true">Namma Pattas</span></h1>
-  <p id="lede">Your camera. Namma celebration. Place a cracker on the floor—or show an open palm and let it follow your hand.</p>
+  <p id="lede">Your camera. Namma celebration. Floor, sky, palm—or tap a detected head for a miniature celebration.</p>
   <button id="startBtn" type="button">Start camera</button>
   <p class="fine" id="note">Camera and motion permission are requested when you start. Nothing is recorded or uploaded.</p><button id="demoBtn" class="text-button" hidden>Try without camera</button>
   <p id="credit"><a href="/namma-vedis/credits" aria-label="Namma Pattas by Abishek — credits">Namma Pattas · by Abishek</a></p>
